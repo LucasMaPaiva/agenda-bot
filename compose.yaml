@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: ${APP_VERSION:-2.0.0}
+        APP_VERSION: ${APP_VERSION:-2.1.0}
         BUILD_COMMIT: ${BUILD_COMMIT:-local}
     container_name: agenda-bot
     restart: unless-stopped
@@ -12,6 +12,15 @@ services:
     environment:
       DATABASE_PATH: /app/data/agenda-bot.db
       GOOGLE_SERVICE_ACCOUNT_FILE: /run/secrets/google-service-account.json
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-true}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:1b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-60}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-1024}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30s}
+      LLM_FALLBACK_TO_GEMINI: ${LLM_FALLBACK_TO_GEMINI:-true}
+    depends_on:
+      - ollama
     volumes:
       - ./data:/app/data
       - ./service-account.json:/run/secrets/google-service-account.json:ro
@@ -21,3 +30,28 @@ services:
         max-size: "5m"
         max-file: "2"
     init: true
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agenda-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "30s"
+      OLLAMA_CONTEXT_LENGTH: "1024"
+    volumes:
+      - ollama-data:/root/.ollama
+    mem_limit: 1800m
+    cpus: 0.80
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+    init: true
+
+volumes:
+  ollama-data:
+    external: true
+    name: agenda-ollama-data

@@ -20,6 +20,7 @@ from google.oauth2.credentials import Credentials as UserCredentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -33,10 +34,24 @@ from telegram.ext import (
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
 GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"))
+OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "false").casefold() in {
+    "1",
+    "true",
+    "yes",
+    "sim",
+}
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:1b")
+OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "60"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30s")
+LLM_FALLBACK_TO_GEMINI = os.environ.get(
+    "LLM_FALLBACK_TO_GEMINI", "true"
+).casefold() in {"1", "true", "yes", "sim"}
 GOOGLE_SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_FILE"]
 CALENDAR_ID = os.environ["CALENDAR_ID"]
 TIMEZONE = os.environ.get("TIMEZONE", "America/Boa_Vista")
@@ -48,7 +63,7 @@ DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
 MAX_RECURRENCE_OCCURRENCES = int(
     os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
 )
-APP_VERSION = os.environ.get("APP_VERSION", "2.0.0")
+APP_VERSION = os.environ.get("APP_VERSION", "2.1.0")
 BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
 GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
@@ -70,12 +85,16 @@ REGISTRATION_CODES = {
     "Letícia": LETICIA_REGISTRATION_CODE,
 }
 
-gemini_client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options=types.HttpOptions(
-        timeout=GEMINI_TIMEOUT_SECONDS * 1000,
-        retry_options=types.HttpRetryOptions(attempts=1),
-    ),
+gemini_client = (
+    genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(
+            timeout=GEMINI_TIMEOUT_SECONDS * 1000,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+    if GEMINI_API_KEY
+    else None
 )
 
 EVENTO_SCHEMA = {
@@ -204,6 +223,37 @@ TAREFA_SCHEMA = {
     "additionalProperties": False,
 }
 
+INTENCAO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intencao": {
+            "type": "string",
+            "enum": [
+                "criar_evento",
+                "consultar_agenda",
+                "criar_tarefa",
+                "listar_tarefas",
+                "concluir_tarefa",
+                "cancelar_evento",
+                "editar_evento",
+                "conversa",
+            ],
+        },
+        "data": {"type": ["string", "null"], "format": "date"},
+        "data_fim": {"type": ["string", "null"], "format": "date"},
+        "pessoal": {"type": "boolean"},
+        "numero_tarefa": {"type": ["integer", "null"]},
+    },
+    "required": [
+        "intencao",
+        "data",
+        "data_fim",
+        "pessoal",
+        "numero_tarefa",
+    ],
+    "additionalProperties": False,
+}
+
 TASKS_SCOPES = ["https://www.googleapis.com/auth/tasks"]
 
 calendar_service = None
@@ -329,7 +379,40 @@ def limpar_notificacoes_antigas() -> None:
         conexao.execute("DELETE FROM notificacoes WHERE sent_at < ?", (limite,))
 
 
+def gerar_resposta_ollama(
+    mensagens: list[dict], schema: Optional[dict] = None, max_tokens: int = 512
+) -> str:
+    corpo = {
+        "model": OLLAMA_MODEL,
+        "messages": mensagens,
+        "stream": False,
+        "think": False,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {
+            "temperature": 0 if schema else 0.5,
+            "num_ctx": OLLAMA_NUM_CTX,
+            "num_predict": max_tokens,
+        },
+    }
+    if schema:
+        corpo["format"] = schema
+    resposta = requests.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json=corpo,
+        timeout=OLLAMA_TIMEOUT_SECONDS,
+    )
+    resposta.raise_for_status()
+    conteudo = resposta.json().get("message", {}).get("content", "").strip()
+    if not conteudo:
+        raise ValueError("o modelo local retornou uma resposta vazia")
+    if schema:
+        json.loads(conteudo)
+    return conteudo
+
+
 def gerar_resposta_gemini(prompt: str, schema: dict = EVENTO_SCHEMA):
+    if gemini_client is None:
+        raise RuntimeError("Gemini não está configurado")
     modelos = list(dict.fromkeys(filter(None, [GEMINI_MODEL, GEMINI_FALLBACK_MODEL])))
     config = {
         "response_mime_type": "application/json",
@@ -357,6 +440,79 @@ def gerar_resposta_gemini(prompt: str, schema: dict = EVENTO_SCHEMA):
     raise RuntimeError("Nenhum modelo Gemini disponível")
 
 
+def gerar_json_intencao(prompt: str, schema: dict) -> str:
+    if OLLAMA_ENABLED:
+        try:
+            return gerar_resposta_ollama(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Responda em português do Brasil. Siga exatamente o "
+                            "schema JSON solicitado, sem texto adicional."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                schema=schema,
+                max_tokens=160,
+            )
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            json.JSONDecodeError,
+        ) as erro:
+            LOGGER.warning("Falha no modelo local %s: %s", OLLAMA_MODEL, erro)
+            if not LLM_FALLBACK_TO_GEMINI:
+                raise
+    return gerar_resposta_gemini(prompt, schema).text
+
+
+def gerar_json_operacao(prompt: str, schema: dict = EVENTO_SCHEMA) -> str:
+    try:
+        return gerar_resposta_gemini(prompt, schema).text
+    except (errors.APIError, TimeoutError, RuntimeError) as erro:
+        LOGGER.warning("Gemini indisponível; usando modelo local: %s", erro)
+        if not OLLAMA_ENABLED:
+            raise
+        return gerar_resposta_ollama(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extraia os dados pedidos em português do Brasil. Siga "
+                        "exatamente o schema JSON, sem texto adicional."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            schema=schema,
+            max_tokens=512,
+        )
+
+
+def gerar_conversa_llm(mensagens: list[dict]) -> str:
+    if OLLAMA_ENABLED:
+        try:
+            return gerar_resposta_ollama(mensagens, max_tokens=220)
+        except (requests.RequestException, ValueError, KeyError) as erro:
+            LOGGER.warning(
+                "Falha na conversa com o modelo local %s: %s", OLLAMA_MODEL, erro
+            )
+            if not LLM_FALLBACK_TO_GEMINI:
+                raise
+    if gemini_client is None:
+        raise RuntimeError("Nenhum modelo de conversa está disponível")
+    resposta = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents="\n".join(
+            f"{item['role']}: {item['content']}" for item in mensagens
+        ),
+    )
+    return resposta.text.strip()
+
+
 def extrair_eventos(texto: str) -> list[dict]:
     agora = datetime.now(TZ)
     prompt = f"""Você extrai dados de eventos de agenda a partir de mensagens em português do Brasil.
@@ -379,8 +535,7 @@ Regras:
 
 Mensagem: "{texto}"
 """
-    resposta = gerar_resposta_gemini(prompt)
-    dados = json.loads(resposta.text)
+    dados = json.loads(gerar_json_operacao(prompt))
 
     primeira_data = date.fromisoformat(dados["data"])
     ultima_data = date.fromisoformat(dados["data_fim"]) if dados.get("data_fim") else primeira_data
@@ -484,8 +639,7 @@ Regras:
 
 Mensagem: "{texto}"
 """
-    resposta = gerar_resposta_gemini(prompt, CANCELAMENTO_SCHEMA)
-    dados = json.loads(resposta.text)
+    dados = json.loads(gerar_json_operacao(prompt, CANCELAMENTO_SCHEMA))
 
     hoje = agora.replace(hour=0, minute=0, second=0, microsecond=0)
     if dados.get("data"):
@@ -528,8 +682,7 @@ Regras:
 
 Mensagem: "{texto}"
 """
-    resposta = gerar_resposta_gemini(prompt, EDICAO_SCHEMA)
-    dados = json.loads(resposta.text)
+    dados = json.loads(gerar_json_operacao(prompt, EDICAO_SCHEMA))
 
     hoje = agora.replace(hour=0, minute=0, second=0, microsecond=0)
     if dados.get("data"):
@@ -642,8 +795,7 @@ Regras:
 
 Mensagem: "{texto}"
 """
-    resposta = gerar_resposta_gemini(prompt, TAREFA_SCHEMA)
-    return json.loads(resposta.text)
+    return json.loads(gerar_json_operacao(prompt, TAREFA_SCHEMA))
 
 
 def criar_tarefa_google(role: str, tarefa: dict) -> dict:
@@ -741,6 +893,137 @@ def texto_normalizado(texto: str) -> str:
         for caractere in normalize("NFD", texto.casefold())
         if not combining(caractere)
     )
+
+
+def eh_pedido_criacao_tarefa(texto: str) -> bool:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    return bool(
+        palavras & {"tarefa", "tarefas", "afazer", "afazeres"}
+        and palavras
+        & {
+            "adiciona",
+            "adicionar",
+            "adicione",
+            "anota",
+            "anotar",
+            "coloca",
+            "colocar",
+            "cria",
+            "criar",
+            "crie",
+            "lembra",
+            "lembrar",
+        }
+    )
+
+
+def eh_pedido_criacao_evento(texto: str) -> bool:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    verbos = palavras & {
+        "adiciona",
+        "adicionar",
+        "adicione",
+        "agenda",
+        "agendar",
+        "agende",
+        "coloca",
+        "colocar",
+        "cria",
+        "criar",
+        "crie",
+        "marca",
+        "marcar",
+        "marque",
+    }
+    sinais_agenda = palavras & {
+        "agenda",
+        "amanha",
+        "compromisso",
+        "compromissos",
+        "domingo",
+        "evento",
+        "eventos",
+        "hoje",
+        "quarta",
+        "quinta",
+        "reuniao",
+        "sabado",
+        "segunda",
+        "sexta",
+        "terca",
+    }
+    tem_data_ou_hora = bool(
+        re.search(
+            r"\b(?:\d{1,2}(?:h\d{0,2}|:\d{2})|\d{1,2}/\d{1,2})\b",
+            texto_normalizado(texto),
+        )
+    )
+    return bool(
+        verbos
+        and (sinais_agenda or tem_data_ou_hora)
+        and not eh_pedido_criacao_tarefa(texto)
+    )
+
+
+def classificar_intencao(texto: str) -> dict:
+    agora = datetime.now(TZ)
+    prompt = f"""Classifique a intenção de uma mensagem enviada a um assistente familiar.
+Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
+
+Intenções possíveis:
+- criar_evento: marcar compromisso com data ou horário no Google Agenda.
+- consultar_agenda: perguntar por compromissos/eventos.
+- criar_tarefa: criar afazer ou lembrete pessoal no Google Tarefas.
+- listar_tarefas: perguntar pelas tarefas ou afazeres pendentes.
+- concluir_tarefa: concluir um número da última lista de tarefas.
+- cancelar_evento: apagar, excluir ou desmarcar evento da agenda.
+- editar_evento: mudar data, horário, título ou responsável de evento.
+- conversa: saudação, pergunta geral, conselho ou conversa sem operação solicitada.
+
+Regras:
+- Não transforme conversa casual em evento.
+- Só use criar_evento/criar_tarefa quando houver um pedido explícito para adicionar.
+- Uma afirmação como "vou ter uma reunião quinta" ou um pedido de conselho sobre onde
+  encaixar algo é conversa, não criação.
+- Só use editar_evento ou cancelar_evento quando a alteração/exclusão for explícita.
+- Para consulta de agenda, resolva o período e preencha data/data_fim. data_fim é inclusiva.
+- "Minha agenda" ou "o que eu tenho" usa pessoal=true; "nossa", "ambos" ou
+  "o que temos" usa pessoal=false.
+- Para concluir tarefa, extraia o número em numero_tarefa.
+- Nos outros casos use null nos campos que não se aplicam.
+
+Mensagem: {json.dumps(texto, ensure_ascii=False)}
+"""
+    return json.loads(gerar_json_intencao(prompt, INTENCAO_SCHEMA))
+
+
+def intervalo_da_intencao(dados: dict) -> tuple[datetime, datetime, str]:
+    data_inicial = (
+        date.fromisoformat(dados["data"])
+        if dados.get("data")
+        else datetime.now(TZ).date()
+    )
+    data_final = (
+        date.fromisoformat(dados["data_fim"])
+        if dados.get("data_fim")
+        else data_inicial
+    )
+    if data_final < data_inicial:
+        raise ValueError("a data final da consulta é anterior à inicial")
+    if (data_final - data_inicial).days + 1 > MAX_EVENT_RANGE_DAYS:
+        raise ValueError(
+            f"a consulta pode abranger no máximo {MAX_EVENT_RANGE_DAYS} dias"
+        )
+    inicio = datetime.combine(data_inicial, datetime.min.time(), tzinfo=TZ)
+    fim = datetime.combine(
+        data_final + timedelta(days=1), datetime.min.time(), tzinfo=TZ
+    )
+    rotulo = (
+        data_inicial.strftime("%d/%m/%Y")
+        if data_inicial == data_final
+        else f"{data_inicial.strftime('%d/%m')} a {data_final.strftime('%d/%m/%Y')}"
+    )
+    return inicio, fim, rotulo
 
 
 def mensagem_erro_usuario(acao: str, erro: Exception) -> str:
@@ -940,6 +1223,22 @@ def intervalo_de_consulta(texto: str) -> Optional[tuple[datetime, datetime, str]
     if "semana" in normalizado:
         dias_ate_proxima_segunda = 7 - hoje.weekday()
         return hoje, hoje + timedelta(days=dias_ate_proxima_segunda), "esta semana"
+    tem_data_especifica = bool(
+        re.search(r"\b\d{1,2}(?:/\d{1,2}(?:/\d{2,4})?)?\b", normalizado)
+        or set(re.findall(r"[a-z]+", normalizado))
+        & {
+            "segunda",
+            "terca",
+            "quarta",
+            "quinta",
+            "sexta",
+            "sabado",
+            "domingo",
+        }
+    )
+    if tem_data_especifica:
+        # Datas livres e intervalos são resolvidos pelo classificador estruturado.
+        return None
     return hoje, hoje + timedelta(days=1), "hoje"
 
 
@@ -1058,6 +1357,57 @@ async def responder_consulta(
             if responsavel_do_evento(evento) in {role, "Ambos"}
         ]
     await update.message.reply_text(formatar_agenda(eventos, rotulo))
+
+
+def contexto_agenda_para_conversa(role: str) -> str:
+    inicio = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    fim = inicio + timedelta(days=8)
+    eventos = [
+        evento
+        for evento in buscar_eventos(inicio, fim)
+        if responsavel_do_evento(evento) in {role, "Ambos"}
+    ][:12]
+    if not eventos:
+        return "Agenda real dos próximos 8 dias: nenhum compromisso."
+
+    linhas = ["Agenda real dos próximos 8 dias:"]
+    eventos_com_horario = []
+    for evento in eventos:
+        comeco = inicio_do_evento(evento)
+        termino = fim_do_evento(evento)
+        titulo = evento.get("summary", "Sem título")
+        if comeco and termino:
+            linhas.append(
+                f"- {comeco.strftime('%d/%m %H:%M')}–{termino.strftime('%H:%M')}: "
+                f"{titulo} ({responsavel_do_evento(evento)})"
+            )
+            eventos_com_horario.append((comeco, termino, titulo))
+        else:
+            data_evento = evento.get("start", {}).get("date", "data não informada")
+            linhas.append(f"- {data_evento}: {titulo} (dia inteiro)")
+
+    conflitos = []
+    eventos_com_horario.sort(key=lambda item: item[0])
+    for indice, (comeco, termino, titulo) in enumerate(eventos_com_horario):
+        for outro_comeco, outro_termino, outro_titulo in eventos_com_horario[
+            indice + 1 :
+        ]:
+            if outro_comeco >= termino:
+                break
+            minutos = int(
+                (min(termino, outro_termino) - max(comeco, outro_comeco)).total_seconds()
+                // 60
+            )
+            if minutos > 0:
+                conflitos.append(
+                    f"- {titulo} conflita com {outro_titulo} por {minutos} min."
+                )
+    if conflitos:
+        linhas.append("Conflitos calculados pelo sistema:")
+        linhas.extend(conflitos[:5])
+    else:
+        linhas.append("Conflitos calculados pelo sistema: nenhum.")
+    return "\n".join(linhas)
 
 
 def salvar_acao_pendente(
@@ -1488,12 +1838,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     role = role_do_usuario(update.effective_user.id)
     if role:
         mensagem = (
-            f"Olá, {role}! Posso criar, consultar, alterar e cancelar eventos.\n"
+            f"Olá, {role}! Posso conversar e cuidar da agenda e das tarefas.\n"
             '"O que tenho hoje?"\n"Quais são meus compromissos de amanhã?"\n'
             '"Muda a academia de amanhã para 18h30"\n'
             '"Cancelar academia de amanhã"\n\n'
             "Comandos: /agenda, /editar, /cancelar, /tarefa, /tarefas, "
-            "/concluir e /versao"
+            "/concluir, /limpar_conversa e /versao"
         )
     else:
         mensagem = (
@@ -1654,7 +2004,16 @@ async def concluir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Primeiro use /tarefas e depois /concluir NÚMERO."
         )
         return
-    indice = int(context.args[0]) - 1
+    await concluir_tarefa_da_lista(update, context, role, int(context.args[0]))
+
+
+async def concluir_tarefa_da_lista(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    role: str,
+    numero: int,
+) -> None:
+    indice = numero - 1
     ids = context.user_data.get("ultima_lista_tarefas", [])
     if indice < 0 or indice >= len(ids):
         await update.message.reply_text("Número inválido. Use /tarefas novamente.")
@@ -1670,6 +2029,59 @@ async def concluir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("✅ Tarefa concluída.")
 
 
+async def limpar_conversa(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    if not role_do_usuario(update.effective_user.id):
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    context.user_data.pop("historico_conversa", None)
+    await update.message.reply_text("🧹 Histórico da conversa limpo.")
+
+
+async def responder_conversa(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    role: str,
+    texto: str,
+) -> None:
+    historico = context.user_data.setdefault("historico_conversa", [])
+    agora = datetime.now(TZ)
+    try:
+        contexto_agenda = await asyncio.to_thread(contexto_agenda_para_conversa, role)
+    except Exception:
+        LOGGER.exception("Falha ao carregar contexto da agenda para conversa")
+        contexto_agenda = "A agenda não pôde ser consultada neste momento."
+    mensagens = [
+        {
+            "role": "system",
+            "content": (
+                "Você é o assistente da família Paiva. Converse em português do Brasil, "
+                "com simpatia e respostas curtas e práticas. O usuário atual é "
+                f"{role}; agora é {agora.strftime('%d/%m/%Y %H:%M')} em {TIMEZONE}. "
+                "Use somente os compromissos e conflitos informados pelo sistema; não "
+                "invente eventos. Se houver conflito, respeite prioridades ditas pelo "
+                "usuário e sugira mover um compromisso para depois do término do outro. "
+                "Você não executa ações diretamente e nunca deve afirmar que criou, "
+                "alterou ou apagou algo. Pedidos de agenda e tarefas são executados "
+                "separadamente pelo bot e sempre confirmados quando alteram dados.\n\n"
+                f"{contexto_agenda}"
+            ),
+        },
+        *historico[-4:],
+        {"role": "user", "content": texto},
+    ]
+    resposta = await asyncio.to_thread(gerar_conversa_llm, mensagens)
+    historico.extend(
+        [
+            {"role": "user", "content": texto[:1000]},
+            {"role": "assistant", "content": resposta[:2000]},
+        ]
+    )
+    del historico[:-4]
+    await update.message.reply_text(resposta)
+
+
 async def versao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not role_do_usuario(update.effective_user.id):
         await update.message.reply_text("Telegram não autorizado. Envie /start.")
@@ -1680,7 +2092,8 @@ async def versao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"🤖 Agenda Bot v{APP_VERSION}\n"
         f"Commit: {BUILD_COMMIT}\n"
-        f"Modelo: {GEMINI_MODEL}\n"
+        f"Modelo: {OLLAMA_MODEL if OLLAMA_ENABLED else GEMINI_MODEL}\n"
+        f"Fallback Gemini: {'sim' if LLM_FALLBACK_TO_GEMINI and GEMINI_API_KEY else 'não'}\n"
         f"Ativo há: {horas}h {minutos}min"
     )
 
@@ -1708,7 +2121,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        await iniciar_criacao(update, context, texto)
+        if eh_pedido_criacao_tarefa(texto):
+            await iniciar_criacao_tarefa(update, context, role, texto)
+            return
+
+        if eh_pedido_criacao_evento(texto):
+            await iniciar_criacao(update, context, texto)
+            return
+
+        dados = await asyncio.to_thread(classificar_intencao, texto)
+        intencao = dados["intencao"]
+        if intencao == "criar_evento":
+            await iniciar_criacao(update, context, texto)
+        elif intencao == "consultar_agenda":
+            await responder_consulta(
+                update,
+                intervalo_da_intencao(dados),
+                role if dados.get("pessoal") else None,
+            )
+        elif intencao == "criar_tarefa":
+            await iniciar_criacao_tarefa(update, context, role, texto)
+        elif intencao == "listar_tarefas":
+            await tarefas(update, context)
+        elif intencao == "concluir_tarefa":
+            numero = dados.get("numero_tarefa")
+            if not numero:
+                await update.message.reply_text(
+                    "Qual número você quer concluir? Use /tarefas para ver a lista."
+                )
+            else:
+                await concluir_tarefa_da_lista(update, context, role, numero)
+        elif intencao == "cancelar_evento":
+            await iniciar_cancelamento(update, context, texto)
+        elif intencao == "editar_evento":
+            await iniciar_edicao(update, context, texto)
+        else:
+            await responder_conversa(update, context, role, texto)
     except Exception as erro:
         LOGGER.exception("Falha ao processar mensagem")
         await update.message.reply_text(
@@ -1778,6 +2226,7 @@ def main() -> None:
     app.add_handler(CommandHandler("tarefa", tarefa))
     app.add_handler(CommandHandler("tarefas", tarefas))
     app.add_handler(CommandHandler("concluir", concluir))
+    app.add_handler(CommandHandler("limpar_conversa", limpar_conversa))
     app.add_handler(CommandHandler("versao", versao))
     app.add_handler(CallbackQueryHandler(callback_criacao, pattern=r"^g[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_tarefa, pattern=r"^t[ca]:"))

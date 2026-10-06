@@ -55,6 +55,9 @@ class AgendaLogicTest(unittest.TestCase):
         ):
             self.assertIsNone(bot.intervalo_de_consulta(texto), texto)
 
+        self.assertIsNone(bot.intervalo_de_consulta("o que tenho dia 15/10"))
+        self.assertIsNone(bot.intervalo_de_consulta("o que tenho quinta"))
+
     def test_consulta_pessoal_ou_conjunta(self):
         self.assertTrue(bot.consulta_eh_pessoal("o que eu tenho hoje"))
         self.assertTrue(bot.consulta_eh_pessoal("minha agenda amanhã"))
@@ -99,6 +102,50 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertTrue(bot.eh_pedido_cancelamento("exclui academia amanhã"))
         self.assertTrue(bot.eh_pedido_edicao("muda academia para 18h30"))
         self.assertFalse(bot.eh_pedido_edicao("troca de óleo amanhã às 10h"))
+
+    def test_criacao_explicita_nao_confunde_conversa(self):
+        self.assertTrue(
+            bot.eh_pedido_criacao_evento("marque reunião amanhã às 19h")
+        )
+        self.assertFalse(bot.eh_pedido_criacao_evento("coloca isso em perspectiva"))
+        self.assertTrue(
+            bot.eh_pedido_criacao_tarefa("coloca uma tarefa para comprar sabão")
+        )
+
+    def test_contexto_de_conversa_inclui_conflito_calculado(self):
+        inicio = datetime(2026, 10, 8, 18, 0, tzinfo=bot.TZ)
+        eventos = [
+            {
+                "summary": "Academia",
+                "description": "Responsável: Ambos",
+                "start": {"dateTime": inicio.isoformat()},
+                "end": {"dateTime": (inicio + timedelta(minutes=75)).isoformat()},
+            },
+            {
+                "summary": "Reunião",
+                "description": "Responsável: Matheus",
+                "start": {"dateTime": (inicio + timedelta(minutes=60)).isoformat()},
+                "end": {"dateTime": (inicio + timedelta(minutes=120)).isoformat()},
+            },
+        ]
+        with patch.object(bot, "buscar_eventos", return_value=eventos):
+            contexto = bot.contexto_agenda_para_conversa("Matheus")
+        self.assertIn("Academia conflita com Reunião por 15 min", contexto)
+
+    def test_operacao_usa_modelo_local_se_gemini_estiver_indisponivel(self):
+        dados = self.evento_base()
+        with (
+            patch.object(bot, "OLLAMA_ENABLED", True),
+            patch.object(
+                bot, "gerar_resposta_gemini", side_effect=RuntimeError("offline")
+            ),
+            patch.object(
+                bot, "gerar_resposta_ollama", return_value=json.dumps(dados)
+            ) as ollama,
+        ):
+            resposta = bot.gerar_json_operacao("teste", bot.EVENTO_SCHEMA)
+        self.assertEqual(json.loads(resposta), dados)
+        ollama.assert_called_once()
 
     def test_preparar_edicao_preserva_duracao(self):
         original = {

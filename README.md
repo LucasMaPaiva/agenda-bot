@@ -2,7 +2,7 @@
 
 Bot que recebe mensagens em texto livre no Telegram e gerencia o Google Agenda
 compartilhado do Matheus e da Letícia, com integração opcional ao Google Tarefas
-individual de cada um.
+individual de cada um e conversa local pelo Gemma 3 executado no Ollama.
 
 Além de criar eventos, o bot consulta compromissos de hoje, amanhã ou da semana e
 envia lembretes no Telegram. Somente os dois usuários cadastrados podem usar o bot.
@@ -15,9 +15,15 @@ Esse bot segue as mesmas regras definidas lá:
 
 ## Como funciona
 1. Telegram recebe a mensagem (ex: "lembrar de pagar a conta de luz sexta às 18h")
-2. O texto vai pra API do Gemini, que extrai título/data/hora/responsável em JSON estruturado
+2. Pedidos explícitos usam o Gemini para extrair título/data/hora/responsável com precisão
 3. O bot mostra uma prévia e só cria depois da confirmação no Telegram
-4. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
+4. Conversas e pedidos ambíguos usam o Gemma 3 local; o código consulta a agenda e calcula
+   conflitos antes de fornecer os fatos ao modelo
+5. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
+
+O modelo local nunca altera dados diretamente. Criação, edição e cancelamento continuam
+passando pelos fluxos de confirmação. O histórico de conversa mantém somente as duas últimas
+trocas na memória do processo e pode ser apagado com `/limpar_conversa`.
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
@@ -50,6 +56,21 @@ se o modelo principal estiver temporariamente indisponível. Para trocar os mode
 sem alterar o código, defina `GEMINI_MODEL` e `GEMINI_FALLBACK_MODEL` no `.env`.
 Cada tentativa tem limite padrão de 30 segundos (`GEMINI_TIMEOUT_SECONDS`) e o bot
 continua recebendo atualizações do Telegram enquanto aguarda a resposta do modelo.
+
+### 2.1. Conversa local com Ollama
+
+O Compose executa `gemma3:1b` sem publicar a porta 11434. A configuração foi reduzida
+para servidores pequenos: um modelo por vez, contexto de 1.024 tokens, 0,8 CPU, limite
+de 1.800 MB e descarga da RAM após 30 segundos sem uso. O Gemini permanece como fallback
+quando o modelo local estiver indisponível.
+
+Antes da primeira inicialização, crie o volume e baixe o modelo:
+
+```bash
+docker volume create agenda-ollama-data
+docker compose up -d ollama
+docker compose exec ollama ollama pull gemma3:1b
+```
 
 ### 3. Google Calendar — Service Account
 1. console.cloud.google.com → criar um projeto (ou usar um existente)
@@ -129,7 +150,8 @@ Use `/versao` para confirmar qual versão está rodando.
 
 O container não expõe portas porque o bot usa polling do Telegram. A credencial da
 conta de serviço é montada somente para leitura, e o banco SQLite fica persistido em
-`./data`.
+`./data`. O Ollama também não publica portas; somente o bot pode acessá-lo pela rede
+interna do Compose.
 
 ```bash
 BUILD_COMMIT="$(git rev-parse --short HEAD)" docker compose up --build -d
@@ -153,6 +175,14 @@ Para parar:
 docker compose down
 ```
 
+Os modelos permanecem no volume `agenda-ollama-data`. Para remover um modelo que não
+será mais usado:
+
+```bash
+docker compose exec ollama ollama stop NOME_DO_MODELO
+docker compose exec ollama ollama rm NOME_DO_MODELO
+```
+
 ### 9. Deixar rodando na VPS sem Docker (systemd)
 1. Copiar a pasta inteira pra VPS
 2. Ajustar os caminhos e o usuário em `systemd/agenda-bot.service`
@@ -166,7 +196,7 @@ docker compose down
 ## Testes
 
 Os testes cobrem interpretação informal, filtros pessoais, intervalos, recorrências,
-edição e a confirmação obrigatória antes da criação:
+detecção de conflitos, edição e a confirmação obrigatória antes da criação:
 
 ```bash
 python -m unittest discover -s tests -v
