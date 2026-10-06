@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: ${APP_VERSION:-2.2.0}
+        APP_VERSION: ${APP_VERSION:-2.2.1}
         BUILD_COMMIT: ${BUILD_COMMIT:-local}
     container_name: agenda-bot
     restart: unless-stopped

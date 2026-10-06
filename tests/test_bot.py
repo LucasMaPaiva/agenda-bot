@@ -121,6 +121,7 @@ class AgendaLogicTest(unittest.TestCase):
         eventos = [
             {"summary": "Academia"},
             {"summary": "Reunião Classe Companheiro"},
+            {"summary": "Prontos + Deslocamento"},
         ]
         self.assertEqual(
             bot.filtrar_eventos_por_termo(eventos, "academia"), [eventos[0]]
@@ -128,6 +129,10 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(
             bot.filtrar_eventos_por_termo(eventos, "reunião companheiro"),
             [eventos[1]],
+        )
+        self.assertEqual(
+            bot.filtrar_eventos_por_termo(eventos, "protnos + deslocamento"),
+            [eventos[2]],
         )
 
     def test_contexto_de_conversa_inclui_conflito_calculado(self):

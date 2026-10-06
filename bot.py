@@ -1,4 +1,5 @@
 import asyncio
+from difflib import SequenceMatcher
 import hmac
 import json
 import logging
@@ -63,7 +64,7 @@ DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
 MAX_RECURRENCE_OCCURRENCES = int(
     os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
 )
-APP_VERSION = os.environ.get("APP_VERSION", "2.2.0")
+APP_VERSION = os.environ.get("APP_VERSION", "2.2.1")
 BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
 GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
@@ -1452,7 +1453,25 @@ def filtrar_eventos_por_termo(eventos: list[dict], termo: str) -> list[dict]:
     for evento in eventos:
         titulo_normalizado = texto_normalizado(evento.get("summary", ""))
         palavras_titulo = set(re.findall(r"[a-z0-9]+", titulo_normalizado))
-        if termo_normalizado in titulo_normalizado or palavras_termo <= palavras_titulo:
+        termo_sem_simbolos = " ".join(sorted(palavras_termo))
+        titulo_sem_simbolos = " ".join(sorted(palavras_titulo))
+        palavras_aproximadas = all(
+            any(
+                SequenceMatcher(None, palavra, palavra_titulo).ratio() >= 0.80
+                for palavra_titulo in palavras_titulo
+            )
+            for palavra in palavras_termo
+        )
+        titulo_aproximado = (
+            SequenceMatcher(None, termo_sem_simbolos, titulo_sem_simbolos).ratio()
+            >= 0.78
+        )
+        if (
+            termo_normalizado in titulo_normalizado
+            or palavras_termo <= palavras_titulo
+            or palavras_aproximadas
+            or titulo_aproximado
+        ):
             encontrados.append(evento)
     return encontrados
 
@@ -1477,8 +1496,16 @@ def selecionar_eventos_para_replicar(
             )
             selecionados[chave] = evento
     if ausentes:
+        disponiveis = ", ".join(
+            dict.fromkeys(
+                evento.get("summary", "Sem título") for evento in eventos
+            )
+        )
+        complemento = f". Disponíveis no dia: {disponiveis}" if disponiveis else ""
         raise ValueError(
-            "não encontrei no dia de origem: " + ", ".join(ausentes)
+            "não encontrei no dia de origem: "
+            + ", ".join(ausentes)
+            + complemento
         )
     return sorted(
         selecionados.values(),
