@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,8 +17,15 @@ from google.genai import errors, types
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 load_dotenv()
 
@@ -84,6 +92,28 @@ EVENTO_SCHEMA = {
         "hora_fim",
         "responsavel",
     ],
+    "additionalProperties": False,
+}
+
+CANCELAMENTO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "termo": {
+            "type": ["string", "null"],
+            "description": "Título ou palavras relevantes do evento, sem verbos de exclusão",
+        },
+        "data": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Data inicial informada ou null",
+        },
+        "data_fim": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Última data inclusiva do intervalo ou null",
+        },
+    },
+    "required": ["termo", "data", "data_fim"],
     "additionalProperties": False,
 }
 
@@ -203,11 +233,11 @@ def limpar_notificacoes_antigas() -> None:
         conexao.execute("DELETE FROM notificacoes WHERE sent_at < ?", (limite,))
 
 
-def gerar_resposta_gemini(prompt: str):
+def gerar_resposta_gemini(prompt: str, schema: dict = EVENTO_SCHEMA):
     modelos = list(dict.fromkeys(filter(None, [GEMINI_MODEL, GEMINI_FALLBACK_MODEL])))
     config = {
         "response_mime_type": "application/json",
-        "response_json_schema": EVENTO_SCHEMA,
+        "response_json_schema": schema,
         "automatic_function_calling": {"disable": True},
     }
 
@@ -285,6 +315,47 @@ Mensagem: "{texto}"
     return eventos
 
 
+def extrair_cancelamento(texto: str) -> tuple[Optional[str], datetime, datetime]:
+    agora = datetime.now(TZ)
+    prompt = f"""Você extrai critérios para localizar um evento que será cancelado no Google Agenda.
+Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
+
+Regras:
+- Remova do termo verbos como cancelar, apagar, excluir, remover e desmarcar.
+- Remova também palavras genéricas como evento, compromisso e tarefa quando não fizerem
+  parte real do título. Se não sobrar um título ou assunto útil, use null em "termo".
+- Resolva datas relativas como hoje e amanhã.
+- Para uma data única, preencha "data" e use null em "data_fim".
+- Para um intervalo, use a primeira data em "data" e a última em "data_fim".
+- Se nenhuma data for informada, use null nos dois campos.
+
+Mensagem: "{texto}"
+"""
+    resposta = gerar_resposta_gemini(prompt, CANCELAMENTO_SCHEMA)
+    dados = json.loads(resposta.text)
+
+    hoje = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+    if dados.get("data"):
+        primeira_data = date.fromisoformat(dados["data"])
+        ultima_data = (
+            date.fromisoformat(dados["data_fim"])
+            if dados.get("data_fim")
+            else primeira_data
+        )
+        if ultima_data < primeira_data:
+            raise ValueError("A data final não pode ser anterior à data inicial.")
+        inicio = datetime.combine(primeira_data, datetime.min.time(), tzinfo=TZ)
+        fim = datetime.combine(
+            ultima_data + timedelta(days=1), datetime.min.time(), tzinfo=TZ
+        )
+    else:
+        inicio = hoje
+        fim = hoje + timedelta(days=MAX_EVENT_RANGE_DAYS)
+
+    termo = dados.get("termo")
+    return termo.strip() if termo and termo.strip() else None, inicio, fim
+
+
 def evento_ja_existe(evento: dict) -> bool:
     resposta = (
         calendar_service.events()
@@ -339,6 +410,30 @@ def texto_normalizado(texto: str) -> str:
         caractere
         for caractere in normalize("NFD", texto.casefold())
         if not combining(caractere)
+    )
+
+
+def eh_pedido_cancelamento(texto: str) -> bool:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    return bool(
+        palavras
+        & {
+            "apaga",
+            "apagar",
+            "apague",
+            "cancela",
+            "cancelar",
+            "cancele",
+            "desmarca",
+            "desmarcar",
+            "desmarque",
+            "exclua",
+            "excluir",
+            "exclui",
+            "remove",
+            "remover",
+            "remova",
+        }
     )
 
 
@@ -471,6 +566,29 @@ def buscar_eventos(inicio: datetime, fim: datetime) -> list[dict]:
     return resposta.get("items", [])
 
 
+def buscar_eventos_para_cancelar(
+    termo: Optional[str], inicio: datetime, fim: datetime
+) -> list[dict]:
+    parametros = {
+        "calendarId": CALENDAR_ID,
+        "timeMin": inicio.isoformat(),
+        "timeMax": fim.isoformat(),
+        "singleEvents": True,
+        "orderBy": "startTime",
+        "maxResults": 20,
+    }
+    if termo:
+        parametros["q"] = termo
+    resposta = calendar_service.events().list(**parametros).execute()
+    return resposta.get("items", [])
+
+
+def excluir_evento_calendar(event_id: str) -> None:
+    calendar_service.events().delete(
+        calendarId=CALENDAR_ID, eventId=event_id
+    ).execute()
+
+
 def inicio_do_evento(evento: dict) -> Optional[datetime]:
     valor = evento.get("start", {}).get("dateTime")
     if not valor:
@@ -494,6 +612,16 @@ def responsavel_do_evento(evento: dict) -> str:
         return "Ambos"
     valor = correspondencia.group(1).casefold()
     return {"matheus": "Matheus", "letícia": "Letícia", "ambos": "Ambos"}[valor]
+
+
+def resumo_evento(evento: dict) -> str:
+    titulo = evento.get("summary", "Sem título")
+    inicio = inicio_do_evento(evento)
+    if inicio:
+        horario = inicio.strftime("%d/%m/%Y às %H:%M")
+    else:
+        horario = f"{evento.get('start', {}).get('date', '')} (dia inteiro)"
+    return f"{titulo} — {horario} ({responsavel_do_evento(evento)})"
 
 
 def formatar_agenda(eventos: list[dict], rotulo: str) -> str:
@@ -527,12 +655,143 @@ async def responder_consulta(
     await update.message.reply_text(formatar_agenda(eventos, rotulo))
 
 
+async def iniciar_cancelamento(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+) -> None:
+    termo, inicio, fim = await asyncio.to_thread(extrair_cancelamento, texto)
+    eventos = await asyncio.to_thread(
+        buscar_eventos_para_cancelar, termo, inicio, fim
+    )
+    if not eventos:
+        await update.message.reply_text(
+            "🔎 Não encontrei nenhum evento correspondente. Tente informar o nome e a data."
+        )
+        return
+
+    agora_timestamp = datetime.now(TZ).timestamp()
+    pendentes = context.user_data.setdefault("cancelamentos_pendentes", {})
+    for token_antigo, dados in list(pendentes.items()):
+        if agora_timestamp - dados["criado_em"] > 900:
+            del pendentes[token_antigo]
+
+    token = secrets.token_hex(4)
+    pendentes[token] = {
+        "criado_em": agora_timestamp,
+        "eventos": eventos,
+    }
+
+    botao_desistir = InlineKeyboardButton(
+        "Não cancelar", callback_data=f"ca:{token}"
+    )
+    if len(eventos) == 1:
+        teclado = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Confirmar cancelamento", callback_data=f"cc:{token}:0"
+                    )
+                ],
+                [botao_desistir],
+            ]
+        )
+        await update.message.reply_text(
+            f"Encontrei este evento:\n\n{resumo_evento(eventos[0])}\n\nDeseja cancelá-lo?",
+            reply_markup=teclado,
+        )
+        return
+
+    linhas = ["Encontrei estes eventos. Escolha qual deseja cancelar:"]
+    botoes = []
+    for indice, evento in enumerate(eventos):
+        linhas.append(f"\n{indice + 1}. {resumo_evento(evento)}")
+        titulo = evento.get("summary", "Sem título")
+        botoes.append(
+            [
+                InlineKeyboardButton(
+                    f"{indice + 1}. {titulo}"[:60],
+                    callback_data=f"cs:{token}:{indice}",
+                )
+            ]
+        )
+    botoes.append([botao_desistir])
+    await update.message.reply_text(
+        "".join(linhas), reply_markup=InlineKeyboardMarkup(botoes)
+    )
+
+
+async def callback_cancelamento(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if not role_do_usuario(query.from_user.id):
+        await query.answer("Telegram não autorizado.", show_alert=True)
+        return
+    await query.answer()
+
+    partes = query.data.split(":")
+    acao = partes[0]
+    token = partes[1] if len(partes) > 1 else ""
+    pendentes = context.user_data.get("cancelamentos_pendentes", {})
+    pendente = pendentes.get(token)
+    if not pendente or datetime.now(TZ).timestamp() - pendente["criado_em"] > 900:
+        pendentes.pop(token, None)
+        await query.edit_message_text(
+            "⌛ Esta confirmação expirou. Envie o pedido de cancelamento novamente."
+        )
+        return
+
+    if acao == "ca":
+        pendentes.pop(token, None)
+        await query.edit_message_text("👍 Cancelamento desfeito. Nada foi apagado.")
+        return
+
+    try:
+        indice = int(partes[2])
+        evento = pendente["eventos"][indice]
+    except (IndexError, TypeError, ValueError):
+        await query.edit_message_text("❌ Seleção inválida ou expirada.")
+        return
+
+    if acao == "cs":
+        teclado = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Confirmar cancelamento", callback_data=f"cc:{token}:{indice}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Não cancelar", callback_data=f"ca:{token}"
+                    )
+                ],
+            ]
+        )
+        await query.edit_message_text(
+            f"Você selecionou:\n\n{resumo_evento(evento)}\n\nDeseja realmente cancelar?",
+            reply_markup=teclado,
+        )
+        return
+
+
+    if acao == "cc":
+        try:
+            await asyncio.to_thread(excluir_evento_calendar, evento["id"])
+        except Exception as erro:
+            LOGGER.exception("Falha ao cancelar evento")
+            await query.edit_message_text(f"❌ Não consegui cancelar o evento: {erro}")
+            return
+        pendentes.pop(token, None)
+        await query.edit_message_text(f"✅ Evento cancelado:\n\n{resumo_evento(evento)}")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     role = role_do_usuario(update.effective_user.id)
     if role:
         mensagem = (
             f"Olá, {role}! Mande uma tarefa para criar um evento ou pergunte:\n"
-            '"O que tenho hoje?"\n"Quais são meus compromissos de amanhã?"'
+            '"O que tenho hoje?"\n"Quais são meus compromissos de amanhã?"\n'
+            'Para excluir com confirmação: "Cancelar academia de amanhã"'
         )
     else:
         mensagem = (
@@ -586,6 +845,24 @@ async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Não consegui consultar a agenda: {erro}")
 
 
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not role_do_usuario(update.effective_user.id):
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Use: /cancelar NOME E DATA\nExemplo: /cancelar academia amanhã"
+        )
+        return
+    try:
+        await iniciar_cancelamento(update, context, " ".join(context.args))
+    except Exception as erro:
+        LOGGER.exception("Falha ao buscar evento para cancelamento")
+        await update.message.reply_text(
+            f"❌ Não consegui buscar o evento para cancelar: {erro}"
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = update.message.text
     if not role_do_usuario(update.effective_user.id):
@@ -593,6 +870,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
+        if eh_pedido_cancelamento(texto):
+            await iniciar_cancelamento(update, context, texto)
+            return
+
         intervalo = intervalo_de_consulta(texto)
         if intervalo:
             await responder_consulta(update, intervalo)
@@ -688,6 +969,10 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("registrar", registrar))
     app.add_handler(CommandHandler("agenda", agenda))
+    app.add_handler(CommandHandler("cancelar", cancelar))
+    app.add_handler(
+        CallbackQueryHandler(callback_cancelamento, pattern=r"^c[sca]:")
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 

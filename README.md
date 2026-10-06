@@ -20,6 +20,10 @@ Esse bot segue as mesmas regras definidas lá:
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
 
+Pedidos como "cancelar academia de amanhã" ou `/cancelar academia amanhã` buscam
+os eventos correspondentes. Se houver mais de um, o bot pede para escolher e sempre
+exige confirmação antes de excluir. A confirmação expira após 15 minutos.
+
 Intervalos como "Evangelismo de 10/10 até 18/10 às 19h20" criam um evento em
 cada dia, incluindo a data inicial e a final. Por segurança, o limite padrão é de
 31 dias e pode ser alterado com `MAX_EVENT_RANGE_DAYS`.
@@ -121,7 +125,7 @@ docker compose down
 4. Ver logs: `journalctl -u agenda-bot -f`
 
 ## Limitações conhecidas (v1)
-- Não edita nem apaga eventos, só cria
+- Não edita eventos; o cancelamento exige confirmação no Telegram
 - Intervalos são criados como eventos diários independentes, não como uma recorrência
   editável em bloco no Google Agenda
 - Se o Gemini não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
