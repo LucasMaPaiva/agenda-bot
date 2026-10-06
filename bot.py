@@ -63,7 +63,7 @@ DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
 MAX_RECURRENCE_OCCURRENCES = int(
     os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
 )
-APP_VERSION = os.environ.get("APP_VERSION", "2.1.1")
+APP_VERSION = os.environ.get("APP_VERSION", "2.2.0")
 BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
 GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
@@ -223,6 +223,29 @@ TAREFA_SCHEMA = {
     "additionalProperties": False,
 }
 
+REPLICACAO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "data_origem": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Dia do qual os eventos serão copiados",
+        },
+        "data_destino": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Dia para o qual os eventos serão copiados",
+        },
+        "termos": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Nomes dos eventos pedidos; vazio significa toda a rotina",
+        },
+    },
+    "required": ["data_origem", "data_destino", "termos"],
+    "additionalProperties": False,
+}
+
 INTENCAO_SCHEMA = {
     "type": "object",
     "properties": {
@@ -236,6 +259,7 @@ INTENCAO_SCHEMA = {
                 "concluir_tarefa",
                 "cancelar_evento",
                 "editar_evento",
+                "replicar_eventos",
                 "conversa",
             ],
         },
@@ -803,6 +827,41 @@ Mensagem: "{texto}"
     return json.loads(gerar_json_operacao(prompt, TAREFA_SCHEMA))
 
 
+def extrair_replicacao(texto: str) -> tuple[date, date, list[str]]:
+    agora = datetime.now(TZ)
+    prompt = f"""Extraia um pedido para copiar eventos existentes entre dois dias.
+Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
+
+Regras:
+- data_origem é o dia no qual os eventos já existem.
+- data_destino é o novo dia que receberá as cópias.
+- Resolva hoje, amanhã e dias da semana com base na data atual.
+- Em "copie academia de terça para quarta", terça é a origem e quarta o destino.
+- termos contém somente os nomes dos eventos citados, sem verbos ou datas.
+- Separe nomes coordenados: "acordar, culto, café e trabalho" gera quatro termos.
+- Para "copie minha rotina inteira", use termos=[].
+- Se origem ou destino não estiver informado, use null; não invente a data.
+
+Mensagem: {json.dumps(texto, ensure_ascii=False)}
+"""
+    dados = json.loads(gerar_json_operacao(prompt, REPLICACAO_SCHEMA))
+    if not dados.get("data_origem") or not dados.get("data_destino"):
+        raise ValueError(
+            "informe o dia de origem e o destino, por exemplo: "
+            "replica academia de terça para quarta"
+        )
+    data_origem = date.fromisoformat(dados["data_origem"])
+    data_destino = date.fromisoformat(dados["data_destino"])
+    if data_origem == data_destino:
+        raise ValueError("o dia de origem e o destino precisam ser diferentes")
+    termos = [
+        termo.strip()
+        for termo in dados.get("termos", [])
+        if isinstance(termo, str) and termo.strip()
+    ]
+    return data_origem, data_destino, termos
+
+
 def criar_tarefa_google(role: str, tarefa: dict) -> dict:
     body = {"title": tarefa["titulo"]}
     if tarefa.get("notas"):
@@ -979,6 +1038,27 @@ def eh_consulta_de_compromisso_especifico(texto: str) -> bool:
     )
 
 
+def eh_pedido_replicacao(texto: str) -> bool:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    return bool(
+        palavras
+        & {
+            "copia",
+            "copiar",
+            "copie",
+            "duplica",
+            "duplicar",
+            "duplique",
+            "repete",
+            "repetir",
+            "repita",
+            "replica",
+            "replicar",
+            "replique",
+        }
+    )
+
+
 def classificar_intencao(texto: str) -> dict:
     agora = datetime.now(TZ)
     prompt = f"""Classifique a intenção de uma mensagem enviada a um assistente familiar.
@@ -992,6 +1072,7 @@ Intenções possíveis:
 - concluir_tarefa: concluir um número da última lista de tarefas.
 - cancelar_evento: apagar, excluir ou desmarcar evento da agenda.
 - editar_evento: mudar data, horário, título ou responsável de evento.
+- replicar_eventos: copiar eventos que já existem em um dia para outro dia.
 - conversa: saudação, pergunta geral, conselho ou conversa sem operação solicitada.
 
 Regras:
@@ -1000,6 +1081,8 @@ Regras:
 - Uma afirmação como "vou ter uma reunião quinta" ou um pedido de conselho sobre onde
   encaixar algo é conversa, não criação.
 - Só use editar_evento ou cancelar_evento quando a alteração/exclusão for explícita.
+- Use replicar_eventos para pedidos explícitos com verbos como copiar, replicar,
+  duplicar ou repetir eventos existentes em outro dia.
 - Para consulta de agenda, resolva o período e preencha data/data_fim. data_fim é inclusiva.
 - Se a pessoa perguntar por um compromisso específico, como "que horas é a academia?",
   preencha termo somente com o nome relevante, como "academia". Em consultas gerais,
@@ -1374,6 +1457,103 @@ def filtrar_eventos_por_termo(eventos: list[dict], termo: str) -> list[dict]:
     return encontrados
 
 
+def selecionar_eventos_para_replicar(
+    eventos: list[dict], termos: list[str]
+) -> list[dict]:
+    if not termos:
+        return eventos
+
+    selecionados = {}
+    ausentes = []
+    for termo in termos:
+        encontrados = filtrar_eventos_por_termo(eventos, termo)
+        if not encontrados:
+            ausentes.append(termo)
+            continue
+        for evento in encontrados:
+            chave = evento.get("id") or (
+                evento.get("summary"),
+                json.dumps(evento.get("start", {}), sort_keys=True),
+            )
+            selecionados[chave] = evento
+    if ausentes:
+        raise ValueError(
+            "não encontrei no dia de origem: " + ", ".join(ausentes)
+        )
+    return sorted(
+        selecionados.values(),
+        key=lambda evento: inicio_do_evento(evento) or datetime.max.replace(tzinfo=TZ),
+    )
+
+
+def preparar_eventos_replicados(
+    eventos: list[dict], data_destino: date
+) -> list[dict]:
+    copias = []
+    for evento in eventos:
+        inicio_original = inicio_do_evento(evento)
+        fim_original = fim_do_evento(evento)
+        if not inicio_original or not fim_original:
+            raise ValueError(
+                "a replicação de eventos de dia inteiro ainda não é suportada"
+            )
+        novo_inicio = datetime.combine(
+            data_destino,
+            inicio_original.time().replace(tzinfo=None),
+            tzinfo=TZ,
+        )
+        novo_fim = novo_inicio + (fim_original - inicio_original)
+        copias.append(
+            {
+                "titulo": evento.get("summary", "Sem título"),
+                "responsavel": responsavel_do_evento(evento),
+                "inicio": novo_inicio,
+                "fim": novo_fim,
+                "recorrencia": "nenhuma",
+            }
+        )
+    return copias
+
+
+def conflitos_da_replicacao(eventos_novos: list[dict]) -> list[str]:
+    if not eventos_novos:
+        return []
+    inicio_busca = min(evento["inicio"] for evento in eventos_novos).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    fim_busca = (
+        max(evento["fim"] for evento in eventos_novos)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        + timedelta(days=1)
+    )
+    conflitos = []
+    ordenados = sorted(eventos_novos, key=lambda evento: evento["inicio"])
+    for indice, novo in enumerate(ordenados):
+        for outro in ordenados[indice + 1 :]:
+            if outro["inicio"] >= novo["fim"]:
+                break
+            if novo["inicio"] < outro["fim"]:
+                conflitos.append(
+                    f"{novo['titulo']} conflita com {outro['titulo']} "
+                    "entre os eventos copiados"
+                )
+
+    existentes = buscar_eventos(inicio_busca, fim_busca)
+    for novo in eventos_novos:
+        for existente in existentes:
+            inicio_existente = inicio_do_evento(existente)
+            fim_existente = fim_do_evento(existente)
+            if not inicio_existente or not fim_existente:
+                continue
+            if novo["inicio"] < fim_existente and inicio_existente < novo["fim"]:
+                conflitos.append(
+                    f"{novo['titulo']} conflita com "
+                    f"{existente.get('summary', 'Sem título')} "
+                    f"({inicio_existente.strftime('%H:%M')}–{fim_existente.strftime('%H:%M')})"
+                )
+    return conflitos
+
+
 async def responder_consulta(
     update: Update,
     intervalo: tuple[datetime, datetime, str],
@@ -1476,19 +1656,34 @@ def resumo_criacao(eventos: list[dict]) -> str:
             f"🕒 {primeiro['inicio'].strftime('%H:%M')}–{primeiro['fim'].strftime('%H:%M')}\n"
             f"👤 {primeiro['responsavel']}"
         )
-    return (
-        f"{primeiro['titulo']}\n"
-        f"🗓 {len(eventos)} eventos, de {primeiro['inicio'].strftime('%d/%m/%Y')} "
-        f"a {eventos[-1]['inicio'].strftime('%d/%m/%Y')}\n"
-        f"🕒 {primeiro['inicio'].strftime('%H:%M')}–{primeiro['fim'].strftime('%H:%M')}\n"
-        f"👤 {primeiro['responsavel']}"
-    )
+    if len({evento["titulo"] for evento in eventos}) == 1:
+        return (
+            f"{primeiro['titulo']}\n"
+            f"🗓 {len(eventos)} eventos, de {primeiro['inicio'].strftime('%d/%m/%Y')} "
+            f"a {eventos[-1]['inicio'].strftime('%d/%m/%Y')}\n"
+            f"🕒 {primeiro['inicio'].strftime('%H:%M')}–{primeiro['fim'].strftime('%H:%M')}\n"
+            f"👤 {primeiro['responsavel']}"
+        )
+
+    linhas = [f"{len(eventos)} eventos:"]
+    for evento in eventos[:15]:
+        linhas.append(
+            f"\n• {evento['inicio'].strftime('%d/%m %H:%M')}–"
+            f"{evento['fim'].strftime('%H:%M')} — {evento['titulo']} "
+            f"({evento['responsavel']})"
+        )
+    if len(eventos) > 15:
+        linhas.append(f"\n… e mais {len(eventos) - 15} eventos.")
+    return "".join(linhas)
 
 
-async def iniciar_criacao(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+async def mostrar_confirmacao_criacao(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    eventos: list[dict],
+    cabecalho: str = "Confira antes de criar:",
+    avisos: Optional[list[str]] = None,
 ) -> None:
-    eventos = await asyncio.to_thread(extrair_eventos, texto)
     token = salvar_acao_pendente(
         context, "criacoes_pendentes", {"eventos": eventos}
     )
@@ -1502,9 +1697,58 @@ async def iniciar_criacao(
             [InlineKeyboardButton("Não criar", callback_data=f"ga:{token}")],
         ]
     )
+    texto_avisos = ""
+    if avisos:
+        itens = "\n".join(f"• {aviso}" for aviso in dict.fromkeys(avisos[:5]))
+        texto_avisos = f"\n\n⚠️ Conflitos no destino:\n{itens}"
     await update.message.reply_text(
-        f"Confira antes de criar:\n\n{resumo_criacao(eventos)}",
+        f"{cabecalho}\n\n{resumo_criacao(eventos)}{texto_avisos}",
         reply_markup=teclado,
+    )
+
+
+async def iniciar_criacao(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+) -> None:
+    eventos = await asyncio.to_thread(extrair_eventos, texto)
+    await mostrar_confirmacao_criacao(update, context, eventos)
+
+
+async def iniciar_replicacao(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    role: str,
+    texto: str,
+) -> None:
+    data_origem, data_destino, termos = await asyncio.to_thread(
+        extrair_replicacao, texto
+    )
+    inicio_origem = datetime.combine(data_origem, datetime.min.time(), tzinfo=TZ)
+    eventos_origem = await asyncio.to_thread(
+        buscar_eventos, inicio_origem, inicio_origem + timedelta(days=1)
+    )
+    if not termos:
+        eventos_origem = [
+            evento
+            for evento in eventos_origem
+            if responsavel_do_evento(evento) in {role, "Ambos"}
+        ]
+    selecionados = selecionar_eventos_para_replicar(eventos_origem, termos)
+    if not selecionados:
+        raise ValueError("não encontrei eventos para replicar no dia de origem")
+    if len(selecionados) > 30:
+        raise ValueError("a replicação permite no máximo 30 eventos por vez")
+    copias = preparar_eventos_replicados(selecionados, data_destino)
+    conflitos = await asyncio.to_thread(conflitos_da_replicacao, copias)
+    await mostrar_confirmacao_criacao(
+        update,
+        context,
+        copias,
+        cabecalho=(
+            f"Confira a cópia de {data_origem.strftime('%d/%m/%Y')} "
+            f"para {data_destino.strftime('%d/%m/%Y')}:"
+        ),
+        avisos=conflitos,
     )
 
 
@@ -1880,8 +2124,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"Olá, {role}! Posso conversar e cuidar da agenda e das tarefas.\n"
             '"O que tenho hoje?"\n"Quais são meus compromissos de amanhã?"\n'
             '"Muda a academia de amanhã para 18h30"\n'
+            '"Replica academia de terça para quarta"\n'
             '"Cancelar academia de amanhã"\n\n'
-            "Comandos: /agenda, /editar, /cancelar, /tarefa, /tarefas, "
+            "Comandos: /agenda, /editar, /replicar, /cancelar, /tarefa, /tarefas, "
             "/concluir, /limpar_conversa e /versao"
         )
     else:
@@ -1975,6 +2220,26 @@ async def editar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         LOGGER.exception("Falha ao buscar evento para edição")
         await update.message.reply_text(
             mensagem_erro_usuario("buscar o evento para alterar", erro)
+        )
+
+
+async def replicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Use: /replicar EVENTOS DE ORIGEM PARA DESTINO\n"
+            "Exemplo: /replicar academia e trabalho de terça para quarta"
+        )
+        return
+    try:
+        await iniciar_replicacao(update, context, role, " ".join(context.args))
+    except Exception as erro:
+        LOGGER.exception("Falha ao preparar replicação")
+        await update.message.reply_text(
+            mensagem_erro_usuario("preparar a replicação", erro)
         )
 
 
@@ -2145,6 +2410,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
+        if eh_pedido_replicacao(texto):
+            await iniciar_replicacao(update, context, role, texto)
+            return
+
         if eh_pedido_cancelamento(texto):
             await iniciar_cancelamento(update, context, texto)
             return
@@ -2199,6 +2468,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await iniciar_cancelamento(update, context, texto)
         elif intencao == "editar_evento":
             await iniciar_edicao(update, context, texto)
+        elif intencao == "replicar_eventos":
+            await iniciar_replicacao(update, context, role, texto)
         else:
             await responder_conversa(update, context, role, texto)
     except Exception as erro:
@@ -2267,6 +2538,7 @@ def main() -> None:
     app.add_handler(CommandHandler("agenda", agenda))
     app.add_handler(CommandHandler("cancelar", cancelar))
     app.add_handler(CommandHandler("editar", editar))
+    app.add_handler(CommandHandler("replicar", replicar))
     app.add_handler(CommandHandler("tarefa", tarefa))
     app.add_handler(CommandHandler("tarefas", tarefas))
     app.add_handler(CommandHandler("concluir", concluir))

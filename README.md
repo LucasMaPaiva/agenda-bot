@@ -37,6 +37,13 @@ exige confirmação antes de excluir. A confirmação expira após 15 minutos.
 Edições como "muda a academia de amanhã para 18h30" ou
 `/editar academia de amanhã para 18h30` também mostram antes/depois e exigem confirmação.
 
+Replicações como "replica academia, culto e trabalho de terça para quarta" ou
+`/replicar academia e trabalho de terça para quarta` buscam os eventos no dia de
+origem, preservam horário, duração e responsável e mostram uma prévia única. Se algum
+nome não for encontrado ou houver conflito no destino, o bot informa antes da confirmação.
+Sem uma lista de nomes, "replica minha rotina de terça para quarta" copia os eventos
+do usuário e os eventos marcados para ambos.
+
 Intervalos como "Evangelismo de 10/10 até 18/10 às 19h20" criam um evento em
 cada dia, incluindo a data inicial e a final. Por segurança, o limite padrão é de
 31 dias e pode ser alterado com `MAX_EVENT_RANGE_DAYS`.

@@ -165,6 +165,45 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(json.loads(resposta), dados)
         ollama.assert_called_once()
 
+    def test_extrai_e_prepara_replicacao_preservando_horarios(self):
+        dados = {
+            "data_origem": "2026-10-06",
+            "data_destino": "2026-10-07",
+            "termos": ["academia", "trabalho"],
+        }
+        with patch.object(
+            bot, "gerar_json_operacao", return_value=json.dumps(dados)
+        ):
+            origem, destino, termos = bot.extrair_replicacao("teste")
+        self.assertEqual(origem.isoformat(), "2026-10-06")
+        self.assertEqual(destino.isoformat(), "2026-10-07")
+        self.assertEqual(termos, ["academia", "trabalho"])
+
+        inicio = datetime(2026, 10, 6, 18, 0, tzinfo=bot.TZ)
+        evento = {
+            "id": "academia-1",
+            "summary": "Academia",
+            "description": "Responsável: Ambos",
+            "start": {"dateTime": inicio.isoformat()},
+            "end": {"dateTime": (inicio + timedelta(minutes=75)).isoformat()},
+        }
+        copia = bot.preparar_eventos_replicados([evento], destino)[0]
+        self.assertEqual(copia["inicio"].isoformat(), "2026-10-07T18:00:00-04:00")
+        self.assertEqual(copia["fim"].isoformat(), "2026-10-07T19:15:00-04:00")
+        self.assertEqual(copia["responsavel"], "Ambos")
+
+    def test_replicacao_reconhece_verbo_e_exige_todos_os_eventos(self):
+        self.assertTrue(
+            bot.eh_pedido_replicacao(
+                "replica acordar, culto e trabalho de terça para quarta"
+            )
+        )
+        eventos = [{"id": "1", "summary": "Academia"}]
+        with self.assertRaisesRegex(ValueError, "trabalho"):
+            bot.selecionar_eventos_para_replicar(
+                eventos, ["academia", "trabalho"]
+            )
+
     def test_preparar_edicao_preserva_duracao(self):
         original = {
             "id": "abc",
