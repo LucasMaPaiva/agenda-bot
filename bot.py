@@ -257,19 +257,107 @@ def texto_normalizado(texto: str) -> str:
     )
 
 
+def eh_consulta_agenda(texto: str) -> bool:
+    palavras = re.findall(r"[a-z0-9]+", texto_normalizado(texto))
+    conjunto = set(palavras)
+
+    verbos_criacao = {
+        "adiciona",
+        "adicionar",
+        "adicione",
+        "agenda",
+        "agendar",
+        "agende",
+        "cria",
+        "criar",
+        "crie",
+        "marca",
+        "marcar",
+        "marque",
+    }
+    if conjunto & verbos_criacao:
+        # "agenda" também é substantivo; só indica criação quando vem com um
+        # complemento que não parece uma consulta.
+        verbos_sem_agenda = verbos_criacao - {"agenda"}
+        if conjunto & verbos_sem_agenda:
+            return False
+        if palavras[0] == "agenda" and len(palavras) > 2 and palavras[1] not in {
+            "da",
+            "de",
+            "do",
+            "hoje",
+            "hj",
+            "amanha",
+            "pra",
+            "para",
+        }:
+            return False
+
+    verbos_listagem = {
+        "consulta",
+        "consultar",
+        "liste",
+        "listar",
+        "mostra",
+        "mostrar",
+        "mostre",
+        "ver",
+        "veja",
+    }
+    termos_agenda = {"agenda", "agendas", "compromisso", "compromissos", "evento", "eventos"}
+    if conjunto & verbos_listagem and conjunto & termos_agenda:
+        return True
+
+    verbos_posse = {"existe", "existem", "ha", "tenho", "tem", "temos", "ter"}
+    interrogativos = {"oq", "oque", "q", "qual", "quais", "que"}
+    if conjunto & verbos_posse and conjunto & interrogativos:
+        return True
+
+    periodos = {"hoje", "hj", "amanha", "semana"}
+    plurais_agenda = {"agendas", "compromissos", "eventos"}
+    possessivos = {"meu", "meus", "minha", "nossa", "nossas", "nosso", "nossos"}
+    if "agenda" in conjunto and (conjunto & periodos or len(palavras) <= 3):
+        return True
+    if conjunto & plurais_agenda and conjunto & periodos:
+        return True
+    if conjunto & termos_agenda and conjunto & {"qual", "quais"}:
+        return True
+    if conjunto & termos_agenda and conjunto & possessivos:
+        return True
+    if "tem" in conjunto and conjunto & periodos:
+        return True
+
+    termos_genericos = {"algo", "alguma", "coisa"}
+    if conjunto & termos_genericos and conjunto & periodos:
+        return True
+
+    palavras_de_consulta_curta = {
+        "a",
+        "da",
+        "de",
+        "do",
+        "e",
+        "essa",
+        "esta",
+        "hoje",
+        "hj",
+        "amanha",
+        "o",
+        "para",
+        "pra",
+        "que",
+        "semana",
+        "tem",
+    }
+    if conjunto & periodos and conjunto <= palavras_de_consulta_curta:
+        return True
+
+    return False
+
+
 def intervalo_de_consulta(texto: str) -> Optional[tuple[datetime, datetime, str]]:
     normalizado = texto_normalizado(texto)
-    padroes_consulta = (
-        r"\b(?:o que|oq) (?:eu |nos )?(?:tenho|temos|tem)\b",
-        r"\b(?:tenho|temos|tem) (?:o que )?(?:pra |para )?"
-        r"(?:hoje|amanha|esta semana)\b",
-        r"\bquais (?:sao )?(?:os )?(?:meus )?(?:compromissos|eventos)\b",
-        r"\b(?:ver|mostrar|mostre|listar|liste|consultar) "
-        r"(?:a |minha |meus )?(?:agenda|compromissos|eventos)\b",
-        r"\b(?:minha agenda|agenda (?:de |pra |para )?"
-        r"(?:hoje|amanha|esta semana))\b",
-    )
-    if not any(re.search(padrao, normalizado) for padrao in padroes_consulta):
+    if not eh_consulta_agenda(texto):
         return None
 
     hoje = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
