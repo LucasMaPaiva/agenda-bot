@@ -1,6 +1,8 @@
 # Bot do Telegram — Agenda Compartilhada
 
-Bot que recebe mensagens em texto livre no Telegram e cria eventos direto no Google Agenda compartilhado do Matheus e da Letícia.
+Bot que recebe mensagens em texto livre no Telegram e gerencia o Google Agenda
+compartilhado do Matheus e da Letícia, com integração opcional ao Google Tarefas
+individual de cada um.
 
 Além de criar eventos, o bot consulta compromissos de hoje, amanhã ou da semana e
 envia lembretes no Telegram. Somente os dois usuários cadastrados podem usar o bot.
@@ -14,19 +16,26 @@ Esse bot segue as mesmas regras definidas lá:
 ## Como funciona
 1. Telegram recebe a mensagem (ex: "lembrar de pagar a conta de luz sexta às 18h")
 2. O texto vai pra API do Gemini, que extrai título/data/hora/responsável em JSON estruturado
-3. O bot cria o evento via Google Calendar API, já com a cor e a descrição certas
+3. O bot mostra uma prévia e só cria depois da confirmação no Telegram
 4. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
+Consultas com "eu", "meu" ou "minha" mostram somente os eventos do usuário e os
+eventos de ambos. Consultas com "temos", "nossa" ou "todos" mostram a agenda conjunta.
 
 Pedidos como "cancelar academia de amanhã" ou `/cancelar academia amanhã` buscam
 os eventos correspondentes. Se houver mais de um, o bot pede para escolher e sempre
 exige confirmação antes de excluir. A confirmação expira após 15 minutos.
 
+Edições como "muda a academia de amanhã para 18h30" ou
+`/editar academia de amanhã para 18h30` também mostram antes/depois e exigem confirmação.
+
 Intervalos como "Evangelismo de 10/10 até 18/10 às 19h20" criam um evento em
 cada dia, incluindo a data inicial e a final. Por segurança, o limite padrão é de
 31 dias e pode ser alterado com `MAX_EVENT_RANGE_DAYS`.
+Recorrências como "toda segunda e quarta até dezembro" e "todo primeiro domingo
+do mês" são expandidas em eventos independentes, sempre com confirmação do lote.
 
 ## Setup
 
@@ -62,7 +71,35 @@ cp .env.example .env
 `DATABASE_PATH` guarda os cadastros e o histórico de lembretes enviados. Não apague
 esse arquivo enquanto o bot estiver em uso.
 
-### 5. Cadastrar os dois Telegrams
+### 5. Google Tarefas — OAuth individual (opcional)
+
+A conta de serviço do calendário não acessa as tarefas pessoais. Cada usuário precisa
+autorizar sua própria conta uma vez:
+
+1. No Google Cloud, ative a **Google Tasks API**.
+2. Configure a tela de consentimento OAuth e adicione Matheus e Letícia como usuários
+   de teste, se o aplicativo ainda estiver em modo de teste.
+3. Crie uma credencial **OAuth Client ID → Desktop app** e baixe o JSON como
+   `client_secret_tasks.json` nesta pasta.
+4. No computador local, execute uma vez para cada conta, entrando na conta correta
+   quando o navegador abrir:
+
+```bash
+python authorize_tasks.py matheus client_secret_tasks.json
+python authorize_tasks.py leticia client_secret_tasks.json
+```
+
+Isso cria `data/tasks-matheus.json` e `data/tasks-leticia.json`. Esses arquivos contêm
+tokens privados, ficam ignorados pelo Git e devem ser copiados para `data/` no servidor.
+
+```bash
+scp data/tasks-*.json life:/home/life/site/agenda-bot/data/
+```
+
+Comandos disponíveis: `/tarefa comprar sabão até sexta`, `/tarefas` e, depois da
+listagem, `/concluir NÚMERO`. O Google Tarefas armazena a data do prazo, mas não o horário.
+
+### 6. Cadastrar os dois Telegrams
 
 Com o bot rodando, cada pessoa abre uma conversa privada com ele e usa seu código:
 
@@ -74,7 +111,7 @@ Com o bot rodando, cada pessoa abre uma conversa privada com ele e usa seu códi
 O bot não recebe o número de telefone. O cadastro associa o identificador numérico e
 estável que o Telegram entrega ao bot quando a pessoa envia a mensagem.
 
-### 6. Testar localmente
+### 7. Testar localmente
 ```bash
 python3 bot.py
 ```
@@ -86,15 +123,16 @@ O que tenho amanhã?
 ```
 
 Também existe o comando explícito `/agenda hoje`, `/agenda amanhã` ou `/agenda semana`.
+Use `/versao` para confirmar qual versão está rodando.
 
-### 7. Rodar com Docker
+### 8. Rodar com Docker
 
 O container não expõe portas porque o bot usa polling do Telegram. A credencial da
 conta de serviço é montada somente para leitura, e o banco SQLite fica persistido em
 `./data`.
 
 ```bash
-docker compose up --build -d
+BUILD_COMMIT="$(git rev-parse --short HEAD)" docker compose up --build -d
 docker compose logs -f agenda-bot
 ```
 
@@ -105,7 +143,8 @@ volta automaticamente depois de reiniciar o Docker ou o servidor.
 Para aplicar uma alteração futura:
 
 ```bash
-docker compose up --build -d
+sudo env BUILD_COMMIT="$(git rev-parse --short HEAD)" \
+  docker compose up --build -d
 ```
 
 Para parar:
@@ -114,7 +153,7 @@ Para parar:
 docker compose down
 ```
 
-### 8. Deixar rodando na VPS sem Docker (systemd)
+### 9. Deixar rodando na VPS sem Docker (systemd)
 1. Copiar a pasta inteira pra VPS
 2. Ajustar os caminhos e o usuário em `systemd/agenda-bot.service`
 3. ```bash
@@ -124,10 +163,19 @@ docker compose down
    ```
 4. Ver logs: `journalctl -u agenda-bot -f`
 
-## Limitações conhecidas (v1)
-- Não edita eventos; o cancelamento exige confirmação no Telegram
-- Intervalos são criados como eventos diários independentes, não como uma recorrência
-  editável em bloco no Google Agenda
+## Testes
+
+Os testes cobrem interpretação informal, filtros pessoais, intervalos, recorrências,
+edição e a confirmação obrigatória antes da criação:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Limitações conhecidas
+- Intervalos e recorrências são criados como eventos independentes, não como uma série
+  única editável em bloco no Google Agenda
+- Edição e cancelamento atuam em uma ocorrência selecionada por vez
 - Se o Gemini não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
 - Não adiciona convidados aos eventos: contas de serviço só podem preencher `attendees`
   com delegação de domínio do Google Workspace. O calendário compartilhado continua

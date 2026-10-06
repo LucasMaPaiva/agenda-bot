@@ -1,7 +1,9 @@
 .env
 service-account.json
+client_secret*.json
 venv/
 __pycache__/
 *.pyc
+WhatsApp Image *.jpeg
 data/*
 !data/.gitkeep

@@ -1,6 +1,10 @@
 services:
   agenda-bot:
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-2.0.0}
+        BUILD_COMMIT: ${BUILD_COMMIT:-local}
     container_name: agenda-bot
     restart: unless-stopped
     env_file:
