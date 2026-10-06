@@ -1,0 +1,14 @@
+[Unit]
+Description=Bot do Telegram para a agenda compartilhada
+After=network.target
+
+[Service]
+Type=simple
+User=SEU_USUARIO_NA_VPS
+WorkingDirectory=/caminho/para/agenda-bot
+ExecStart=/caminho/para/agenda-bot/venv/bin/python3 /caminho/para/agenda-bot/bot.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
