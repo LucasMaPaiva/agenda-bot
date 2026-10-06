@@ -3,9 +3,10 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 os.environ.update(
@@ -229,6 +230,116 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(novo["fim"].strftime("%H:%M"), "19:45")
         self.assertEqual(novo["responsavel"], "Letícia")
 
+    def test_horarios_livres_respeitam_eventos_buffer_e_duracao(self):
+        eventos = []
+        for titulo, inicio, fim in (
+            ("Trabalho", "09:00", "10:00"),
+            ("Almoço", "12:00", "13:00"),
+        ):
+            comeco = datetime.fromisoformat(f"2026-10-07T{inicio}:00-04:00")
+            termino = datetime.fromisoformat(f"2026-10-07T{fim}:00-04:00")
+            eventos.append(
+                {
+                    "summary": titulo,
+                    "description": "Responsável: Matheus",
+                    "start": {"dateTime": comeco.isoformat()},
+                    "end": {"dateTime": termino.isoformat()},
+                }
+            )
+
+        configuracoes = {
+            "inicio_dia": "08:00",
+            "fim_dia": "18:00",
+            "buffer_minutos": "15",
+        }
+        with (
+            patch.object(bot, "buscar_eventos", return_value=eventos),
+            patch.object(
+                bot,
+                "obter_configuracao",
+                side_effect=lambda role, chave, padrao: configuracoes.get(chave, padrao),
+            ),
+        ):
+            livres = bot.calcular_horarios_livres(
+                "Matheus", date(2026, 10, 7), 60
+            )
+
+        self.assertEqual(
+            [(inicio.strftime("%H:%M"), fim.strftime("%H:%M")) for inicio, fim in livres],
+            [("10:15", "11:45"), ("13:15", "18:00")],
+        )
+
+    def test_pedido_informal_de_horario_livre(self):
+        data_consulta, duracao = bot.pedido_horarios_livres(
+            "Onde cabe uma reunião de 1h30 amanhã?"
+        )
+        self.assertEqual(data_consulta, datetime.now(bot.TZ).date() + timedelta(days=1))
+        self.assertEqual(duracao, 90)
+
+    def test_conflito_entre_novo_evento_e_agenda_existente(self):
+        inicio = datetime(2026, 10, 7, 18, 0, tzinfo=bot.TZ)
+        novo = {
+            "titulo": "Academia",
+            "inicio": inicio,
+            "fim": inicio + timedelta(minutes=75),
+        }
+        existente = {
+            "id": "reuniao-1",
+            "summary": "Reunião",
+            "start": {"dateTime": (inicio + timedelta(hours=1)).isoformat()},
+            "end": {"dateTime": (inicio + timedelta(hours=2)).isoformat()},
+        }
+        with patch.object(bot, "buscar_eventos", return_value=[existente]):
+            conflitos = bot.conflitos_da_replicacao([novo])
+        self.assertEqual(len(conflitos), 1)
+        self.assertIn("Academia conflita com Reunião", conflitos[0])
+
+    def test_desfazer_criacao_remove_os_eventos_registrados(self):
+        eventos_api = MagicMock()
+        eventos_api.delete.return_value.execute.return_value = None
+        servico = MagicMock()
+        servico.events.return_value = eventos_api
+        acao = {
+            "tipo": "criacao",
+            "payload_json": json.dumps({"event_ids": ["evento-1", "evento-2"]}),
+        }
+        with patch.object(bot, "obter_calendar_service", return_value=servico):
+            resultado = bot.executar_desfazer(acao)
+        self.assertEqual(eventos_api.delete.call_count, 2)
+        self.assertIn("2 evento(s)", resultado)
+
+
+class PersistenceTest(unittest.TestCase):
+    def setUp(self):
+        self.database_path = tempfile.mktemp(suffix=".db")
+        self.database_patch = patch.object(bot, "DATABASE_PATH", self.database_path)
+        self.database_patch.start()
+        bot.inicializar_banco()
+
+    def tearDown(self):
+        self.database_patch.stop()
+        Path(self.database_path).unlink(missing_ok=True)
+
+    def test_preferencias_rotinas_e_auditoria_persistem(self):
+        bot.adicionar_preferencia("Matheus", "Academia é prioridade")
+        bot.salvar_configuracao("Matheus", "buffer_minutos", "20")
+        bot.salvar_rotina(
+            "Matheus",
+            "quinta normal",
+            [{"titulo": "Academia", "hora": "18:00", "duracao": 75}],
+        )
+        bot.registrar_acao("Matheus", "criacao", {"event_ids": ["abc"]})
+
+        self.assertEqual(
+            bot.listar_preferencias("Matheus")[0]["texto"],
+            "Academia é prioridade",
+        )
+        self.assertEqual(
+            bot.obter_configuracao("Matheus", "buffer_minutos", "15"), "20"
+        )
+        self.assertEqual(bot.obter_rotina("Matheus", "quinta normal")[0]["duracao"], 75)
+        self.assertEqual(bot.ultima_acao_pendente("Matheus")["tipo"], "criacao")
+
 
 class MensagemFake:
     def __init__(self):
@@ -272,12 +383,14 @@ class ConfirmationFlowTest(unittest.TestCase):
             with (
                 patch.object(bot.asyncio, "to_thread", side_effect=imediato),
                 patch.object(bot, "extrair_eventos", return_value=[evento]),
+                patch.object(bot, "conflitos_da_replicacao", return_value=[]),
                 patch.object(bot, "role_do_usuario", return_value="Matheus"),
                 patch.object(
                     bot,
-                    "criar_eventos_calendar",
-                    side_effect=lambda eventos: criados.extend(eventos) or len(eventos),
+                    "criar_eventos_calendar_com_ids",
+                    side_effect=lambda eventos: criados.extend(eventos) or ["evento-1"],
                 ),
+                patch.object(bot, "registrar_acao"),
             ):
                 await bot.iniciar_criacao(
                     SimpleNamespace(message=mensagem), contexto, "academia amanhã"

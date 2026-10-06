@@ -21,9 +21,26 @@ Esse bot segue as mesmas regras definidas lá:
    conflitos antes de fornecer os fatos ao modelo
 5. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
 
+## Recursos de segurança e planejamento
+
+- Criação, replicação e edição verificam sobreposições antes da confirmação.
+- `/livres amanhã 60` sugere janelas livres considerando a agenda pessoal, um
+  buffer configurável e o horário útil do dia. Também entende frases como
+  "onde cabe uma reunião de 1h amanhã?".
+- Preferências permanentes ajudam a conversa local a respeitar prioridades como
+  "academia é prioridade de segunda a quinta".
+- Rotinas podem ser salvas a partir de um dia existente e aplicadas em outra data.
+- Um resumo diário opcional envia a agenda da pessoa no horário escolhido.
+- Lembretes têm botões para marcar como ciente, abrir o evento ou adiar por 10 minutos.
+- A última criação, edição ou exclusão de evento pode ser revertida com `/desfazer`
+  durante 24 horas.
+- `/status` verifica Google Agenda, autorização do Google Tarefas, Ollama, memória
+  do container e o último ciclo de lembretes.
+
 O modelo local nunca altera dados diretamente. Criação, edição e cancelamento continuam
 passando pelos fluxos de confirmação. O histórico de conversa mantém somente as duas últimas
-trocas na memória do processo e pode ser apagado com `/limpar_conversa`.
+trocas na memória do processo e pode ser apagado com `/limpar_conversa`. As preferências
+salvas no SQLite continuam disponíveis após reinicializações.
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
@@ -125,7 +142,9 @@ scp data/tasks-*.json life:/home/life/site/agenda-bot/data/
 ```
 
 Comandos disponíveis: `/tarefa comprar sabão até sexta`, `/tarefas` e, depois da
-listagem, `/concluir NÚMERO`. O Google Tarefas armazena a data do prazo, mas não o horário.
+listagem, `/concluir NÚMERO`, `/editar_tarefa NÚMERO NOVO TÍTULO` ou
+`/excluir_tarefa NÚMERO`. Edição e exclusão pedem confirmação. O Google Tarefas
+armazena a data do prazo, mas não o horário.
 
 ### 6. Cadastrar os dois Telegrams
 
@@ -153,6 +172,30 @@ O que tenho amanhã?
 Também existe o comando explícito `/agenda hoje`, `/agenda amanhã` ou `/agenda semana`.
 Use `/versao` para confirmar qual versão está rodando.
 
+### Comandos de planejamento
+
+```text
+/livres amanhã 60
+/preferencia Academia é prioridade de segunda a quinta
+/preferencia buffer 15
+/preferencia horario 06:00 22:00
+/preferencias
+/remover_preferencia 1
+
+/salvar_rotina quinta normal | quinta
+/rotinas
+/aplicar_rotina quinta normal | 15/10
+
+/resumo_diario 06:00
+/resumo_diario desligar
+/desfazer
+/status
+```
+
+`/salvar_rotina` copia para um modelo os compromissos pessoais e de ambos que já
+existem no dia indicado. `/aplicar_rotina` mostra uma prévia, aponta conflitos e só
+cria os eventos depois da confirmação.
+
 ### 8. Rodar com Docker
 
 O container não expõe portas porque o bot usa polling do Telegram. A credencial da
@@ -167,7 +210,8 @@ docker compose logs -f agenda-bot
 
 O container usa `restart: unless-stopped`, nível de log `WARNING` e rotação limitada
 a dois arquivos comprimidos de 5 MB. Ele continua rodando após fechar o terminal e
-volta automaticamente depois de reiniciar o Docker ou o servidor.
+volta automaticamente depois de reiniciar o Docker ou o servidor. O Ollama fica
+restrito ao modelo local, tem healthcheck e continua limitado a 1.800 MB de RAM.
 
 Para aplicar uma alteração futura:
 
@@ -203,7 +247,8 @@ docker compose exec ollama ollama rm NOME_DO_MODELO
 ## Testes
 
 Os testes cobrem interpretação informal, filtros pessoais, intervalos, recorrências,
-detecção de conflitos, edição e a confirmação obrigatória antes da criação:
+detecção de conflitos, horários livres, persistência, edição e a confirmação
+obrigatória antes da criação:
 
 ```bash
 python -m unittest discover -s tests -v

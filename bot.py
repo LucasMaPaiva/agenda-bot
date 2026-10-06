@@ -64,7 +64,7 @@ DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
 MAX_RECURRENCE_OCCURRENCES = int(
     os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
 )
-APP_VERSION = os.environ.get("APP_VERSION", "2.2.1")
+APP_VERSION = os.environ.get("APP_VERSION", "3.0.0")
 BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
 GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
@@ -72,6 +72,8 @@ LETICIA_REGISTRATION_CODE = os.environ.get("LETICIA_REGISTRATION_CODE", "")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "WARNING").upper()
 TZ = ZoneInfo(TIMEZONE)
 STARTED_AT = datetime.now(TZ)
+LAST_REMINDER_CHECK: Optional[datetime] = None
+LAST_REMINDER_ERROR: Optional[str] = None
 LOGGER = logging.getLogger(__name__)
 
 # Mesma legenda de cor usada no colorizeRotina.gs (Documents/agenda/scripts)
@@ -261,6 +263,7 @@ INTENCAO_SCHEMA = {
                 "cancelar_evento",
                 "editar_evento",
                 "replicar_eventos",
+                "sugerir_horarios",
                 "conversa",
             ],
         },
@@ -272,6 +275,7 @@ INTENCAO_SCHEMA = {
             "description": "Nome do compromisso específico consultado ou null",
         },
         "numero_tarefa": {"type": ["integer", "null"]},
+        "duracao_minutos": {"type": ["integer", "null"]},
     },
     "required": [
         "intencao",
@@ -280,6 +284,7 @@ INTENCAO_SCHEMA = {
         "pessoal",
         "termo",
         "numero_tarefa",
+        "duracao_minutos",
     ],
     "additionalProperties": False,
 }
@@ -326,7 +331,154 @@ def inicializar_banco() -> None:
                 sent_at TEXT NOT NULL,
                 PRIMARY KEY (event_id, start_time, chat_id, reminder_minutes)
             );
+
+            CREATE TABLE IF NOT EXISTS preferencias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                texto TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS configuracoes (
+                role TEXT NOT NULL,
+                chave TEXT NOT NULL,
+                valor TEXT NOT NULL,
+                PRIMARY KEY (role, chave)
+            );
+
+            CREATE TABLE IF NOT EXISTS rotinas (
+                role TEXT NOT NULL,
+                nome TEXT NOT NULL,
+                eventos_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (role, nome)
+            );
+
+            CREATE TABLE IF NOT EXISTS acoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                undone_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS resumos_enviados (
+                role TEXT NOT NULL,
+                data TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (role, data)
+            );
             """
+        )
+
+
+def listar_preferencias(role: str) -> list[sqlite3.Row]:
+    with conectar_banco() as conexao:
+        return conexao.execute(
+            "SELECT id, texto FROM preferencias WHERE role = ? ORDER BY id", (role,)
+        ).fetchall()
+
+
+def adicionar_preferencia(role: str, texto: str) -> None:
+    with conectar_banco() as conexao:
+        conexao.execute(
+            "INSERT INTO preferencias (role, texto, created_at) VALUES (?, ?, ?)",
+            (role, texto, datetime.now(TZ).isoformat()),
+        )
+
+
+def remover_preferencia(role: str, indice: int) -> bool:
+    preferencias = listar_preferencias(role)
+    if indice < 1 or indice > len(preferencias):
+        return False
+    with conectar_banco() as conexao:
+        conexao.execute(
+            "DELETE FROM preferencias WHERE role = ? AND id = ?",
+            (role, preferencias[indice - 1]["id"]),
+        )
+    return True
+
+
+def obter_configuracao(role: str, chave: str, padrao: str) -> str:
+    with conectar_banco() as conexao:
+        linha = conexao.execute(
+            "SELECT valor FROM configuracoes WHERE role = ? AND chave = ?",
+            (role, chave),
+        ).fetchone()
+    return linha["valor"] if linha else padrao
+
+
+def salvar_configuracao(role: str, chave: str, valor: str) -> None:
+    with conectar_banco() as conexao:
+        conexao.execute(
+            """
+            INSERT INTO configuracoes (role, chave, valor) VALUES (?, ?, ?)
+            ON CONFLICT(role, chave) DO UPDATE SET valor = excluded.valor
+            """,
+            (role, chave, valor),
+        )
+
+
+def salvar_rotina(role: str, nome: str, eventos: list[dict]) -> None:
+    with conectar_banco() as conexao:
+        conexao.execute(
+            """
+            INSERT INTO rotinas (role, nome, eventos_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(role, nome) DO UPDATE SET
+                eventos_json = excluded.eventos_json,
+                updated_at = excluded.updated_at
+            """,
+            (role, nome, json.dumps(eventos), datetime.now(TZ).isoformat()),
+        )
+
+
+def obter_rotina(role: str, nome: str) -> Optional[list[dict]]:
+    with conectar_banco() as conexao:
+        linha = conexao.execute(
+            "SELECT eventos_json FROM rotinas WHERE role = ? AND nome = ?",
+            (role, nome),
+        ).fetchone()
+    return json.loads(linha["eventos_json"]) if linha else None
+
+
+def listar_rotinas(role: str) -> list[str]:
+    with conectar_banco() as conexao:
+        linhas = conexao.execute(
+            "SELECT nome FROM rotinas WHERE role = ? ORDER BY nome", (role,)
+        ).fetchall()
+    return [linha["nome"] for linha in linhas]
+
+
+def registrar_acao(role: str, tipo: str, payload: dict) -> None:
+    with conectar_banco() as conexao:
+        conexao.execute(
+            "INSERT INTO acoes (role, tipo, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            (role, tipo, json.dumps(payload), datetime.now(TZ).isoformat()),
+        )
+        limite = (datetime.now(TZ) - timedelta(days=90)).isoformat()
+        conexao.execute("DELETE FROM acoes WHERE created_at < ?", (limite,))
+
+
+def ultima_acao_pendente(role: str) -> Optional[sqlite3.Row]:
+    limite = (datetime.now(TZ) - timedelta(hours=24)).isoformat()
+    with conectar_banco() as conexao:
+        return conexao.execute(
+            """
+            SELECT * FROM acoes
+            WHERE role = ? AND undone_at IS NULL AND created_at >= ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (role, limite),
+        ).fetchone()
+
+
+def marcar_acao_desfeita(acao_id: int) -> None:
+    with conectar_banco() as conexao:
+        conexao.execute(
+            "UPDATE acoes SET undone_at = ? WHERE id = ?",
+            (datetime.now(TZ).isoformat(), acao_id),
         )
 
 
@@ -901,6 +1053,18 @@ def concluir_tarefa_google(role: str, task_id: str) -> None:
     ).execute()
 
 
+def editar_tarefa_google(role: str, task_id: str, titulo: str) -> None:
+    tasks_service_do_usuario(role).tasks().patch(
+        tasklist="@default", task=task_id, body={"title": titulo}
+    ).execute()
+
+
+def excluir_tarefa_google(role: str, task_id: str) -> None:
+    tasks_service_do_usuario(role).tasks().delete(
+        tasklist="@default", task=task_id
+    ).execute()
+
+
 def evento_ja_existe(evento: dict) -> bool:
     resposta = (
         obter_calendar_service().events()
@@ -948,6 +1112,26 @@ def criar_evento_calendar(evento: dict) -> bool:
     return True
 
 
+def criar_eventos_calendar_com_ids(eventos: list[dict]) -> list[str]:
+    ids = []
+    for evento in eventos:
+        if evento_ja_existe(evento):
+            continue
+        body = {
+            "summary": evento["titulo"],
+            "description": f"Responsável: {evento['responsavel']}",
+            "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
+            "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
+            "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
+        }
+        criado = obter_calendar_service().events().insert(
+            calendarId=CALENDAR_ID, body=body
+        ).execute()
+        if criado.get("id"):
+            ids.append(criado["id"])
+    return ids
+
+
 def criar_eventos_calendar(eventos: list[dict]) -> int:
     return sum(criar_evento_calendar(evento) for evento in eventos)
 
@@ -958,6 +1142,81 @@ def texto_normalizado(texto: str) -> str:
         for caractere in normalize("NFD", texto.casefold())
         if not combining(caractere)
     )
+
+
+def resolver_data_curta(texto: str) -> date:
+    normalizado = texto_normalizado(texto).strip()
+    hoje = datetime.now(TZ).date()
+    if normalizado in {"hoje", "hj"}:
+        return hoje
+    if normalizado in {"amanha", "amanhã"}:
+        return hoje + timedelta(days=1)
+    correspondencia = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", normalizado)
+    if correspondencia:
+        dia, mes, ano = correspondencia.groups()
+        ano_numero = int(ano) if ano else hoje.year
+        if ano and len(ano) == 2:
+            ano_numero += 2000
+        resultado = date(ano_numero, int(mes), int(dia))
+        if not ano and resultado < hoje:
+            resultado = resultado.replace(year=hoje.year + 1)
+        return resultado
+    dias = {
+        "segunda": 0,
+        "terca": 1,
+        "quarta": 2,
+        "quinta": 3,
+        "sexta": 4,
+        "sabado": 5,
+        "domingo": 6,
+    }
+    if normalizado in dias:
+        deslocamento = (dias[normalizado] - hoje.weekday()) % 7
+        return hoje + timedelta(days=deslocamento)
+    raise ValueError("use hoje, amanhã, um dia da semana ou uma data DD/MM")
+
+
+def pedido_horarios_livres(texto: str) -> Optional[tuple[date, int]]:
+    normalizado = texto_normalizado(texto)
+    sinais = (
+        "horario livre",
+        "horarios livres",
+        "onde cabe",
+        "quando cabe",
+        "posso encaixar",
+        "da pra encaixar",
+        "da para encaixar",
+        "tenho tempo",
+    )
+    if not any(sinal in normalizado for sinal in sinais):
+        return None
+
+    data_consulta = None
+    for termo in re.findall(
+        r"\b(?:hoje|hj|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|"
+        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
+        normalizado,
+    ):
+        try:
+            data_consulta = resolver_data_curta(termo)
+            break
+        except ValueError:
+            continue
+    if data_consulta is None:
+        data_consulta = datetime.now(TZ).date()
+
+    duracao = 60
+    horas = re.search(
+        r"\b(\d{1,2})\s*(?:h|hora|horas)"
+        r"(?:\s*(?:e\s*)?(\d{1,2})(?:\s*min)?)?",
+        normalizado,
+    )
+    minutos = re.search(r"\b(\d{1,3})\s*(?:min|minuto|minutos)\b", normalizado)
+    if horas:
+        duracao = int(horas.group(1)) * 60 + int(horas.group(2) or 0)
+    elif minutos:
+        duracao = int(minutos.group(1))
+    return data_consulta, duracao
 
 
 def eh_pedido_criacao_tarefa(texto: str) -> bool:
@@ -1074,6 +1333,7 @@ Intenções possíveis:
 - cancelar_evento: apagar, excluir ou desmarcar evento da agenda.
 - editar_evento: mudar data, horário, título ou responsável de evento.
 - replicar_eventos: copiar eventos que já existem em um dia para outro dia.
+- sugerir_horarios: encontrar horários livres para encaixar um compromisso.
 - conversa: saudação, pergunta geral, conselho ou conversa sem operação solicitada.
 
 Regras:
@@ -1084,6 +1344,8 @@ Regras:
 - Só use editar_evento ou cancelar_evento quando a alteração/exclusão for explícita.
 - Use replicar_eventos para pedidos explícitos com verbos como copiar, replicar,
   duplicar ou repetir eventos existentes em outro dia.
+- Para sugerir_horarios, resolva a data e extraia a duração em minutos. Se a duração
+  não for informada, use 60.
 - Para consulta de agenda, resolva o período e preencha data/data_fim. data_fim é inclusiva.
 - Se a pessoa perguntar por um compromisso específico, como "que horas é a academia?",
   preencha termo somente com o nome relevante, como "academia". Em consultas gerais,
@@ -1382,6 +1644,45 @@ def excluir_evento_calendar(event_id: str) -> None:
     ).execute()
 
 
+def corpo_restauracao_evento(evento: dict) -> dict:
+    chaves = (
+        "summary",
+        "description",
+        "start",
+        "end",
+        "colorId",
+        "location",
+        "reminders",
+    )
+    return {chave: evento[chave] for chave in chaves if chave in evento}
+
+
+def executar_desfazer(acao: sqlite3.Row) -> str:
+    payload = json.loads(acao["payload_json"])
+    service = obter_calendar_service().events()
+    if acao["tipo"] == "criacao":
+        removidos = 0
+        for event_id in payload.get("event_ids", []):
+            try:
+                service.delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
+                removidos += 1
+            except HttpError as erro:
+                if getattr(erro.resp, "status", None) != 404:
+                    raise
+        return f"{removidos} evento(s) criado(s) foram removidos"
+    evento = payload["evento"]
+    body = corpo_restauracao_evento(evento)
+    if acao["tipo"] == "edicao":
+        service.patch(
+            calendarId=CALENDAR_ID, eventId=evento["id"], body=body
+        ).execute()
+        return "o evento voltou ao estado anterior"
+    if acao["tipo"] == "cancelamento":
+        service.insert(calendarId=CALENDAR_ID, body=body).execute()
+        return "o evento cancelado foi recriado"
+    raise ValueError("tipo de ação não suportado")
+
+
 def inicio_do_evento(evento: dict) -> Optional[datetime]:
     valor = evento.get("start", {}).get("dateTime")
     if not valor:
@@ -1542,7 +1843,9 @@ def preparar_eventos_replicados(
     return copias
 
 
-def conflitos_da_replicacao(eventos_novos: list[dict]) -> list[str]:
+def conflitos_da_replicacao(
+    eventos_novos: list[dict], ignorar_ids: Optional[set[str]] = None
+) -> list[str]:
     if not eventos_novos:
         return []
     inicio_busca = min(evento["inicio"] for evento in eventos_novos).replace(
@@ -1568,6 +1871,8 @@ def conflitos_da_replicacao(eventos_novos: list[dict]) -> list[str]:
     existentes = buscar_eventos(inicio_busca, fim_busca)
     for novo in eventos_novos:
         for existente in existentes:
+            if existente.get("id") in (ignorar_ids or set()):
+                continue
             inicio_existente = inicio_do_evento(existente)
             fim_existente = fim_do_evento(existente)
             if not inicio_existente or not fim_existente:
@@ -1656,6 +1961,90 @@ def contexto_agenda_para_conversa(role: str) -> str:
     return "\n".join(linhas)
 
 
+def calcular_horarios_livres(
+    role: str, data_consulta: date, duracao_minutos: int
+) -> list[tuple[datetime, datetime]]:
+    if duracao_minutos < 15 or duracao_minutos > 480:
+        raise ValueError("a duração deve ficar entre 15 minutos e 8 horas")
+    try:
+        hora_inicio = datetime.strptime(
+            obter_configuracao(role, "inicio_dia", "06:00"), "%H:%M"
+        ).time()
+        hora_fim = datetime.strptime(
+            obter_configuracao(role, "fim_dia", "22:00"), "%H:%M"
+        ).time()
+        buffer_minutos = int(obter_configuracao(role, "buffer_minutos", "15"))
+    except ValueError as erro:
+        raise ValueError("as preferências de horário estão inválidas") from erro
+
+    inicio_janela = datetime.combine(data_consulta, hora_inicio, tzinfo=TZ)
+    fim_janela = datetime.combine(data_consulta, hora_fim, tzinfo=TZ)
+    agora = datetime.now(TZ)
+    if data_consulta == agora.date() and agora > inicio_janela:
+        arredondado = agora.replace(second=0, microsecond=0)
+        if agora.second or agora.microsecond:
+            arredondado += timedelta(minutes=1)
+        resto = arredondado.minute % 15
+        if resto:
+            arredondado += timedelta(minutes=15 - resto)
+        inicio_janela = arredondado
+    if inicio_janela >= fim_janela:
+        return []
+    eventos = [
+        evento
+        for evento in buscar_eventos(inicio_janela, fim_janela)
+        if responsavel_do_evento(evento) in {role, "Ambos"}
+    ]
+    ocupados = []
+    for evento in eventos:
+        inicio = inicio_do_evento(evento)
+        fim = fim_do_evento(evento)
+        if inicio and fim:
+            ocupados.append(
+                (
+                    max(inicio_janela, inicio - timedelta(minutes=buffer_minutos)),
+                    min(fim_janela, fim + timedelta(minutes=buffer_minutos)),
+                )
+            )
+    ocupados.sort()
+    mesclados = []
+    for inicio, fim in ocupados:
+        if mesclados and inicio <= mesclados[-1][1]:
+            mesclados[-1] = (mesclados[-1][0], max(mesclados[-1][1], fim))
+        else:
+            mesclados.append((inicio, fim))
+
+    livres = []
+    cursor = inicio_janela
+    duracao = timedelta(minutes=duracao_minutos)
+    for inicio, fim in mesclados:
+        if inicio - cursor >= duracao:
+            livres.append((cursor, inicio))
+        cursor = max(cursor, fim)
+    if fim_janela - cursor >= duracao:
+        livres.append((cursor, fim_janela))
+    return livres
+
+
+def formatar_horarios_livres(
+    data_consulta: date,
+    duracao_minutos: int,
+    horarios: list[tuple[datetime, datetime]],
+) -> str:
+    if not horarios:
+        return (
+            f"⏱ Não encontrei uma janela de {duracao_minutos} min em "
+            f"{data_consulta.strftime('%d/%m/%Y')}."
+        )
+    linhas = [
+        f"⏱ Horários livres em {data_consulta.strftime('%d/%m/%Y')} "
+        f"para {duracao_minutos} min:"
+    ]
+    for inicio, fim in horarios[:6]:
+        linhas.append(f"\n• {inicio.strftime('%H:%M')}–{fim.strftime('%H:%M')}")
+    return "".join(linhas)
+
+
 def salvar_acao_pendente(
     context: ContextTypes.DEFAULT_TYPE, chave: str, dados: dict
 ) -> str:
@@ -1738,7 +2127,8 @@ async def iniciar_criacao(
     update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
 ) -> None:
     eventos = await asyncio.to_thread(extrair_eventos, texto)
-    await mostrar_confirmacao_criacao(update, context, eventos)
+    conflitos = await asyncio.to_thread(conflitos_da_replicacao, eventos)
+    await mostrar_confirmacao_criacao(update, context, eventos, avisos=conflitos)
 
 
 async def iniciar_replicacao(
@@ -1783,7 +2173,8 @@ async def callback_criacao(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     query = update.callback_query
-    if not role_do_usuario(query.from_user.id):
+    role = role_do_usuario(query.from_user.id)
+    if not role:
         await query.answer("Telegram não autorizado.", show_alert=True)
         return
     await query.answer()
@@ -1804,13 +2195,19 @@ async def callback_criacao(
 
     eventos = pendente["eventos"]
     try:
-        quantidade_criada = await asyncio.to_thread(criar_eventos_calendar, eventos)
+        ids_criados = await asyncio.to_thread(criar_eventos_calendar_com_ids, eventos)
+        quantidade_criada = len(ids_criados)
     except Exception:
         LOGGER.exception("Falha ao criar eventos confirmados")
         await query.edit_message_text(
             "❌ Não consegui criar o evento agora. Tente novamente em alguns minutos."
         )
         return
+    if ids_criados:
+        try:
+            registrar_acao(role, "criacao", {"event_ids": ids_criados})
+        except sqlite3.Error:
+            LOGGER.exception("Evento criado, mas a auditoria não pôde ser registrada")
 
     pendentes.pop(token, None)
     quantidade_existente = len(eventos) - quantidade_criada
@@ -1893,14 +2290,21 @@ async def callback_tarefa(
     )
 
 
-def resumo_edicao(evento_original: dict, evento_novo: dict) -> str:
-    return (
+def resumo_edicao(
+    evento_original: dict, evento_novo: dict, avisos: Optional[list[str]] = None
+) -> str:
+    texto = (
         f"Antes:\n{resumo_evento(evento_original)}\n\n"
         f"Depois:\n{evento_novo['titulo']} — "
         f"{evento_novo['inicio'].strftime('%d/%m/%Y às %H:%M')}–"
         f"{evento_novo['fim'].strftime('%H:%M')} "
         f"({evento_novo['responsavel']})"
     )
+    if avisos:
+        texto += "\n\n⚠️ Conflitos:\n" + "\n".join(
+            f"• {aviso}" for aviso in dict.fromkeys(avisos[:5])
+        )
+    return texto
 
 
 def teclado_confirmacao_edicao(token: str, indice: int) -> InlineKeyboardMarkup:
@@ -1937,8 +2341,11 @@ async def iniciar_edicao(
 
     if len(eventos) == 1:
         evento_novo = preparar_evento_editado(eventos[0], alteracoes)
+        conflitos = await asyncio.to_thread(
+            conflitos_da_replicacao, [evento_novo], {eventos[0]["id"]}
+        )
         await update.message.reply_text(
-            resumo_edicao(eventos[0], evento_novo),
+            resumo_edicao(eventos[0], evento_novo, conflitos),
             reply_markup=teclado_confirmacao_edicao(token, 0),
         )
         return
@@ -1967,7 +2374,8 @@ async def callback_edicao(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     query = update.callback_query
-    if not role_do_usuario(query.from_user.id):
+    role = role_do_usuario(query.from_user.id)
+    if not role:
         await query.answer("Telegram não autorizado.", show_alert=True)
         return
     await query.answer()
@@ -1999,8 +2407,11 @@ async def callback_edicao(
         return
 
     if acao == "es":
+        conflitos = await asyncio.to_thread(
+            conflitos_da_replicacao, [evento_novo], {evento_original["id"]}
+        )
         await query.edit_message_text(
-            resumo_edicao(evento_original, evento_novo),
+            resumo_edicao(evento_original, evento_novo, conflitos),
             reply_markup=teclado_confirmacao_edicao(token, indice),
         )
         return
@@ -2014,6 +2425,10 @@ async def callback_edicao(
                 "❌ Não consegui alterar o evento agora. Tente novamente."
             )
             return
+        try:
+            registrar_acao(role, "edicao", {"evento": evento_original})
+        except sqlite3.Error:
+            LOGGER.exception("Evento editado, mas a auditoria não pôde ser registrada")
         pendentes.pop(token, None)
         await query.edit_message_text(
             f"✅ Evento alterado.\n\n{resumo_edicao(evento_original, evento_novo)}"
@@ -2080,7 +2495,8 @@ async def callback_cancelamento(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     query = update.callback_query
-    if not role_do_usuario(query.from_user.id):
+    role = role_do_usuario(query.from_user.id)
+    if not role:
         await query.answer("Telegram não autorizado.", show_alert=True)
         return
     await query.answer()
@@ -2140,6 +2556,10 @@ async def callback_cancelamento(
                 mensagem_erro_usuario("cancelar o evento", erro)
             )
             return
+        try:
+            registrar_acao(role, "cancelamento", {"evento": evento})
+        except sqlite3.Error:
+            LOGGER.exception("Evento cancelado, mas a auditoria não pôde ser registrada")
         pendentes.pop(token, None)
         await query.edit_message_text(f"✅ Evento cancelado:\n\n{resumo_evento(evento)}")
 
@@ -2152,9 +2572,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             '"O que tenho hoje?"\n"Quais são meus compromissos de amanhã?"\n'
             '"Muda a academia de amanhã para 18h30"\n'
             '"Replica academia de terça para quarta"\n'
-            '"Cancelar academia de amanhã"\n\n'
-            "Comandos: /agenda, /editar, /replicar, /cancelar, /tarefa, /tarefas, "
-            "/concluir, /limpar_conversa e /versao"
+            '"Cancelar academia de amanhã"\n'
+            '"Onde cabe uma reunião de 1 hora amanhã?"\n\n'
+            "Principais comandos:\n"
+            "/agenda · /editar · /replicar · /cancelar\n"
+            "/tarefa · /tarefas · /concluir · /editar_tarefa · /excluir_tarefa\n"
+            "/livres · /preferencias · /rotinas · /resumo_diario\n"
+            "/desfazer · /status · /versao"
         )
     else:
         mensagem = (
@@ -2309,6 +2733,7 @@ async def tarefas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     itens = itens[:30]
     context.user_data["ultima_lista_tarefas"] = [item["id"] for item in itens]
+    context.user_data["ultima_lista_tarefas_itens"] = itens
     linhas = [f"📋 Tarefas de {role}:"]
     for indice, item in enumerate(itens, start=1):
         prazo = item.get("due")
@@ -2360,6 +2785,112 @@ async def concluir_tarefa_da_lista(
     await update.message.reply_text("✅ Tarefa concluída.")
 
 
+async def editar_tarefa_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if len(context.args) < 2 or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Use /tarefas e depois: /editar_tarefa NÚMERO NOVO TÍTULO"
+        )
+        return
+    indice = int(context.args[0]) - 1
+    itens = context.user_data.get("ultima_lista_tarefas_itens", [])
+    if indice < 0 or indice >= len(itens):
+        await update.message.reply_text("Número inválido. Use /tarefas novamente.")
+        return
+    novo_titulo = " ".join(context.args[1:]).strip()
+    token = salvar_acao_pendente(
+        context,
+        "alteracoes_tarefas_pendentes",
+        {"role": role, "item": itens[indice], "novo_titulo": novo_titulo},
+    )
+    await update.message.reply_text(
+        f"Alterar tarefa:\n{itens[indice].get('title', 'Sem título')}\n→ {novo_titulo}?",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Confirmar", callback_data=f"tuc:{token}")],
+             [InlineKeyboardButton("Não alterar", callback_data=f"tua:{token}")]]
+        ),
+    )
+
+
+async def excluir_tarefa_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("Use /tarefas e depois: /excluir_tarefa NÚMERO")
+        return
+    indice = int(context.args[0]) - 1
+    itens = context.user_data.get("ultima_lista_tarefas_itens", [])
+    if indice < 0 or indice >= len(itens):
+        await update.message.reply_text("Número inválido. Use /tarefas novamente.")
+        return
+    token = salvar_acao_pendente(
+        context,
+        "exclusoes_tarefas_pendentes",
+        {"role": role, "item": itens[indice]},
+    )
+    await update.message.reply_text(
+        f"Excluir a tarefa “{itens[indice].get('title', 'Sem título')}”?",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Confirmar exclusão", callback_data=f"tdc:{token}")],
+             [InlineKeyboardButton("Não excluir", callback_data=f"tda:{token}")]]
+        ),
+    )
+
+
+async def callback_alteracao_tarefa(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    role = role_do_usuario(query.from_user.id)
+    if not role:
+        await query.answer("Telegram não autorizado.", show_alert=True)
+        return
+    await query.answer()
+    acao, token = query.data.split(":", 1)
+    chave = (
+        "alteracoes_tarefas_pendentes" if acao.startswith("tu")
+        else "exclusoes_tarefas_pendentes"
+    )
+    pendentes = context.user_data.get(chave, {})
+    pendente = pendentes.get(token)
+    expirou = pendente and (
+        datetime.now(TZ).timestamp() - pendente["criado_em"] > 900
+    )
+    if not pendente or expirou or pendente["role"] != role:
+        pendentes.pop(token, None)
+        await query.edit_message_text("⌛ Esta confirmação expirou.")
+        return
+    if acao in {"tua", "tda"}:
+        pendentes.pop(token, None)
+        await query.edit_message_text("👍 Nada foi alterado.")
+        return
+    item = pendente["item"]
+    try:
+        if acao == "tuc":
+            await asyncio.to_thread(
+                editar_tarefa_google, role, item["id"], pendente["novo_titulo"]
+            )
+            mensagem = "✅ Tarefa alterada."
+        else:
+            await asyncio.to_thread(excluir_tarefa_google, role, item["id"])
+            mensagem = "✅ Tarefa excluída."
+    except Exception as erro:
+        operacao = "editar a tarefa" if acao == "tuc" else "excluir a tarefa"
+        await query.edit_message_text(mensagem_erro_usuario(operacao, erro))
+        return
+    pendentes.pop(token, None)
+    await query.edit_message_text(mensagem)
+
+
 async def limpar_conversa(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -2368,6 +2899,280 @@ async def limpar_conversa(
         return
     context.user_data.pop("historico_conversa", None)
     await update.message.reply_text("🧹 Histórico da conversa limpo.")
+
+
+async def preferencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    texto = " ".join(context.args).strip()
+    if not texto:
+        await update.message.reply_text(
+            "Use: /preferencia TEXTO\n"
+            "Exemplo: /preferencia Academia é prioridade de segunda a quinta"
+        )
+        return
+    if len(texto) > 300:
+        await update.message.reply_text("A preferência pode ter no máximo 300 caracteres.")
+        return
+    partes = texto.split()
+    if partes[0].casefold() == "buffer" and len(partes) == 2 and partes[1].isdigit():
+        minutos = int(partes[1])
+        if minutos < 0 or minutos > 120:
+            await update.message.reply_text("O buffer deve ficar entre 0 e 120 minutos.")
+            return
+        salvar_configuracao(role, "buffer_minutos", str(minutos))
+        await update.message.reply_text(f"✅ Buffer salvo: {minutos} minutos.")
+        return
+    if partes[0].casefold() == "horario" and len(partes) == 3:
+        try:
+            inicio_dia = datetime.strptime(partes[1], "%H:%M")
+            fim_dia = datetime.strptime(partes[2], "%H:%M")
+        except ValueError:
+            await update.message.reply_text("Use: /preferencia horario 06:00 22:00")
+            return
+        if inicio_dia >= fim_dia:
+            await update.message.reply_text("O início do dia deve ser anterior ao fim.")
+            return
+        salvar_configuracao(role, "inicio_dia", partes[1])
+        salvar_configuracao(role, "fim_dia", partes[2])
+        await update.message.reply_text(
+            f"✅ Janela do dia salva: {partes[1]}–{partes[2]}."
+        )
+        return
+    if len(listar_preferencias(role)) >= 20:
+        await update.message.reply_text(
+            "Você já tem 20 preferências. Remova uma com /remover_preferencia."
+        )
+        return
+    adicionar_preferencia(role, texto)
+    await update.message.reply_text("✅ Preferência salva e usada nas conversas.")
+
+
+async def preferencias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    itens = listar_preferencias(role)
+    linhas = [f"⚙️ Preferências de {role}:"]
+    if itens:
+        linhas.extend(f"\n{indice}. {item['texto']}" for indice, item in enumerate(itens, 1))
+    else:
+        linhas.append("\nNenhuma preferência textual salva.")
+    linhas.append(
+        f"\n\nHorário: {obter_configuracao(role, 'inicio_dia', '06:00')}–"
+        f"{obter_configuracao(role, 'fim_dia', '22:00')}"
+        f"\nBuffer: {obter_configuracao(role, 'buffer_minutos', '15')} min"
+    )
+    await update.message.reply_text("".join(linhas))
+
+
+async def remover_preferencia_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("Use: /remover_preferencia NÚMERO")
+        return
+    if remover_preferencia(role, int(context.args[0])):
+        await update.message.reply_text("✅ Preferência removida.")
+    else:
+        await update.message.reply_text("Número inválido. Use /preferencias.")
+
+
+async def livres(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if not context.args:
+        await update.message.reply_text("Use: /livres DATA [MINUTOS]\nExemplo: /livres amanhã 60")
+        return
+    try:
+        data_consulta = resolver_data_curta(context.args[0])
+        duracao = int(context.args[1]) if len(context.args) > 1 else 60
+        horarios = await asyncio.to_thread(
+            calcular_horarios_livres, role, data_consulta, duracao
+        )
+        await update.message.reply_text(
+            formatar_horarios_livres(data_consulta, duracao, horarios)
+        )
+    except Exception as erro:
+        await update.message.reply_text(mensagem_erro_usuario("calcular horários livres", erro))
+
+
+async def salvar_rotina_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    entrada = " ".join(context.args)
+    if "|" not in entrada:
+        await update.message.reply_text("Use: /salvar_rotina NOME | DATA")
+        return
+    nome, data_texto = (parte.strip() for parte in entrada.split("|", 1))
+    try:
+        if not nome or len(nome) > 60:
+            raise ValueError("o nome da rotina deve ter entre 1 e 60 caracteres")
+        data_origem = resolver_data_curta(data_texto)
+        inicio = datetime.combine(data_origem, datetime.min.time(), tzinfo=TZ)
+        eventos = await asyncio.to_thread(buscar_eventos, inicio, inicio + timedelta(days=1))
+        eventos = [
+            evento for evento in eventos
+            if responsavel_do_evento(evento) in {role, "Ambos"}
+            and inicio_do_evento(evento) and fim_do_evento(evento)
+        ]
+        if not eventos:
+            raise ValueError("não encontrei eventos com horário nessa data")
+        if len(eventos) > 30:
+            raise ValueError("uma rotina pode conter no máximo 30 eventos")
+        modelo = []
+        for evento in eventos:
+            comeco = inicio_do_evento(evento)
+            termino = fim_do_evento(evento)
+            modelo.append(
+                {
+                    "titulo": evento.get("summary", "Sem título"),
+                    "hora": comeco.strftime("%H:%M"),
+                    "duracao": int((termino - comeco).total_seconds() // 60),
+                    "responsavel": responsavel_do_evento(evento),
+                }
+            )
+        salvar_rotina(role, nome, modelo)
+        await update.message.reply_text(f"✅ Rotina “{nome}” salva com {len(modelo)} eventos.")
+    except Exception as erro:
+        await update.message.reply_text(mensagem_erro_usuario("salvar a rotina", erro))
+
+
+async def aplicar_rotina_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    entrada = " ".join(context.args)
+    if "|" not in entrada:
+        await update.message.reply_text("Use: /aplicar_rotina NOME | DATA")
+        return
+    nome, data_texto = (parte.strip() for parte in entrada.split("|", 1))
+    try:
+        if not nome:
+            raise ValueError("informe o nome da rotina")
+        modelo = obter_rotina(role, nome)
+        if not modelo:
+            raise ValueError(f"a rotina “{nome}” não existe")
+        destino = resolver_data_curta(data_texto)
+        eventos = []
+        for item in modelo:
+            inicio = datetime.combine(
+                destino, datetime.strptime(item["hora"], "%H:%M").time(), tzinfo=TZ
+            )
+            eventos.append(
+                {
+                    "titulo": item["titulo"],
+                    "inicio": inicio,
+                    "fim": inicio + timedelta(minutes=item["duracao"]),
+                    "responsavel": item["responsavel"],
+                    "recorrencia": "nenhuma",
+                }
+            )
+        conflitos = await asyncio.to_thread(conflitos_da_replicacao, eventos)
+        await mostrar_confirmacao_criacao(
+            update, context, eventos, f"Confira a rotina “{nome}”:", conflitos
+        )
+    except Exception as erro:
+        await update.message.reply_text(mensagem_erro_usuario("aplicar a rotina", erro))
+
+
+async def rotinas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    nomes = listar_rotinas(role)
+    await update.message.reply_text(
+        "📋 Rotinas salvas:\n" + ("\n".join(f"• {nome}" for nome in nomes) if nomes else "Nenhuma.")
+    )
+
+
+async def resumo_diario_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if len(context.args) != 1:
+        atual = obter_configuracao(role, "resumo_diario", "desligado")
+        await update.message.reply_text(
+            f"Resumo diário: {atual}. Use /resumo_diario HH:MM ou desligar."
+        )
+        return
+    valor = context.args[0].casefold()
+    if valor in {"desligar", "desligado", "off"}:
+        salvar_configuracao(role, "resumo_diario", "desligado")
+        await update.message.reply_text("✅ Resumo diário desligado.")
+        return
+    try:
+        datetime.strptime(valor, "%H:%M")
+    except ValueError:
+        await update.message.reply_text("Use: /resumo_diario 06:00 ou /resumo_diario desligar")
+        return
+    salvar_configuracao(role, "resumo_diario", valor)
+    await update.message.reply_text(f"✅ Resumo diário programado para {valor}.")
+
+
+async def desfazer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    acao = ultima_acao_pendente(role)
+    if not acao:
+        await update.message.reply_text("Não há ação das últimas 24 horas para desfazer.")
+        return
+    nomes = {"criacao": "criação", "edicao": "edição", "cancelamento": "cancelamento"}
+    await update.message.reply_text(
+        f"Desfazer a última {nomes.get(acao['tipo'], acao['tipo'])}?",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Confirmar", callback_data=f"uc:{acao['id']}")],
+             [InlineKeyboardButton("Não desfazer", callback_data=f"ua:{acao['id']}")]]
+        ),
+    )
+
+
+async def callback_desfazer(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    role = role_do_usuario(query.from_user.id)
+    if not role:
+        await query.answer("Telegram não autorizado.", show_alert=True)
+        return
+    await query.answer()
+    acao_codigo, id_texto = query.data.split(":", 1)
+    if acao_codigo == "ua":
+        await query.edit_message_text("👍 Nada foi desfeito.")
+        return
+    acao = ultima_acao_pendente(role)
+    if not acao or acao["id"] != int(id_texto):
+        await query.edit_message_text("Esta ação não está mais disponível.")
+        return
+    try:
+        resultado = await asyncio.to_thread(executar_desfazer, acao)
+        marcar_acao_desfeita(acao["id"])
+    except Exception as erro:
+        await query.edit_message_text(mensagem_erro_usuario("desfazer a ação", erro))
+        return
+    await query.edit_message_text(f"✅ Ação desfeita: {resultado}.")
 
 
 async def responder_conversa(
@@ -2383,6 +3188,12 @@ async def responder_conversa(
     except Exception:
         LOGGER.exception("Falha ao carregar contexto da agenda para conversa")
         contexto_agenda = "A agenda não pôde ser consultada neste momento."
+    preferencias_salvas = [item["texto"] for item in listar_preferencias(role)]
+    contexto_preferencias = (
+        "Preferências permanentes do usuário:\n- " + "\n- ".join(preferencias_salvas)
+        if preferencias_salvas
+        else "Preferências permanentes do usuário: nenhuma salva."
+    )
     mensagens = [
         {
             "role": "system",
@@ -2396,7 +3207,7 @@ async def responder_conversa(
                 "Você não executa ações diretamente e nunca deve afirmar que criou, "
                 "alterou ou apagou algo. Pedidos de agenda e tarefas são executados "
                 "separadamente pelo bot e sempre confirmados quando alteram dados.\n\n"
-                f"{contexto_agenda}"
+                f"{contexto_agenda}\n\n{contexto_preferencias}"
             ),
         },
         *historico[-4:],
@@ -2429,6 +3240,63 @@ async def versao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def obter_status_servicos(role: str) -> list[str]:
+    linhas = []
+    try:
+        obter_calendar_service().events().list(
+            calendarId=CALENDAR_ID, maxResults=1
+        ).execute()
+        linhas.append("✅ Google Agenda")
+    except Exception:
+        linhas.append("❌ Google Agenda")
+    linhas.append(
+        "✅ Google Tarefas"
+        if caminho_token_tasks(role).is_file()
+        else "❌ Google Tarefas sem autorização"
+    )
+    if OLLAMA_ENABLED:
+        try:
+            resposta = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+            resposta.raise_for_status()
+            modelos = [item.get("name", "") for item in resposta.json().get("models", [])]
+            linhas.append(
+                f"✅ Ollama ({OLLAMA_MODEL})"
+                if any(modelo.startswith(OLLAMA_MODEL) for modelo in modelos)
+                else f"⚠️ Ollama ativo, mas sem {OLLAMA_MODEL}"
+            )
+        except requests.RequestException:
+            linhas.append("❌ Ollama")
+    try:
+        atual = int(Path("/sys/fs/cgroup/memory.current").read_text().strip())
+        limite_texto = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if limite_texto != "max":
+            limite = int(limite_texto)
+            linhas.append(f"ℹ️ RAM do bot: {atual / 2**20:.0f}/{limite / 2**20:.0f} MB")
+    except (OSError, ValueError):
+        pass
+    if LAST_REMINDER_CHECK:
+        linhas.append(
+            f"{'❌' if LAST_REMINDER_ERROR else '✅'} Lembretes verificados às "
+            f"{LAST_REMINDER_CHECK.strftime('%H:%M:%S')}"
+        )
+        if LAST_REMINDER_ERROR:
+            linhas.append(f"⚠️ Último erro: {LAST_REMINDER_ERROR[:100]}")
+    else:
+        linhas.append("⏳ Lembretes ainda não verificados desde a inicialização")
+    return linhas
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    linhas = await asyncio.to_thread(obter_status_servicos, role)
+    await update.message.reply_text(
+        f"🤖 Agenda Bot v{APP_VERSION} ({BUILD_COMMIT})\n" + "\n".join(linhas)
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = update.message.text
     role = role_do_usuario(update.effective_user.id)
@@ -2437,6 +3305,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
+        normalizado = texto_normalizado(texto)
+        if "tarefa" in normalizado:
+            numero = re.search(
+                r"\b(?:a\s+)?tarefa\s+(?:numero\s+)?(\d+)\b", normalizado
+            )
+            if numero and eh_pedido_cancelamento(texto):
+                context.args = [numero.group(1)]
+                await excluir_tarefa_cmd(update, context)
+                return
+            edicao_tarefa = re.search(
+                r"\b(?:a\s+)?tarefa\s+(?:n[uú]mero\s+)?(\d+)"
+                r".*?\bpara\s+(.+)$",
+                texto,
+                re.IGNORECASE,
+            )
+            if edicao_tarefa and eh_pedido_edicao(texto):
+                context.args = [edicao_tarefa.group(1), edicao_tarefa.group(2)]
+                await editar_tarefa_cmd(update, context)
+                return
+            if eh_pedido_cancelamento(texto) or eh_pedido_edicao(texto):
+                await update.message.reply_text(
+                    "Primeiro use /tarefas; depois informe o número, por exemplo: "
+                    "/excluir_tarefa 2 ou /editar_tarefa 2 Novo título."
+                )
+                return
+
+        pedido_livre = pedido_horarios_livres(texto)
+        if pedido_livre:
+            data_consulta, duracao = pedido_livre
+            horarios = await asyncio.to_thread(
+                calcular_horarios_livres, role, data_consulta, duracao
+            )
+            await update.message.reply_text(
+                formatar_horarios_livres(data_consulta, duracao, horarios)
+            )
+            return
+
         if eh_pedido_replicacao(texto):
             await iniciar_replicacao(update, context, role, texto)
             return
@@ -2497,6 +3402,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await iniciar_edicao(update, context, texto)
         elif intencao == "replicar_eventos":
             await iniciar_replicacao(update, context, role, texto)
+        elif intencao == "sugerir_horarios":
+            intervalo = intervalo_da_intencao(dados)
+            data_consulta = intervalo[0].date()
+            duracao = dados.get("duracao_minutos") or 60
+            horarios = await asyncio.to_thread(
+                calcular_horarios_livres, role, data_consulta, duracao
+            )
+            await update.message.reply_text(
+                formatar_horarios_livres(data_consulta, duracao, horarios)
+            )
         else:
             await responder_conversa(update, context, role, texto)
     except Exception as erro:
@@ -2507,6 +3422,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def verificar_lembretes(context: ContextTypes.DEFAULT_TYPE) -> None:
+    global LAST_REMINDER_CHECK, LAST_REMINDER_ERROR
     try:
         agora = datetime.now(TZ)
         fim_da_janela = agora + timedelta(minutes=REMINDER_MINUTES)
@@ -2531,12 +3447,117 @@ async def verificar_lembretes(context: ContextTypes.DEFAULT_TYPE) -> None:
                 chat_id = usuario["chat_id"]
                 if notificacao_enviada(evento["id"], inicio_iso, chat_id):
                     continue
-                await context.bot.send_message(chat_id=chat_id, text=mensagem)
+                token = secrets.token_hex(4)
+                pendentes = context.application.bot_data.setdefault(
+                    "lembretes_interativos", {}
+                )
+                pendentes[token] = {"chat_id": chat_id, "mensagem": mensagem}
+                while len(pendentes) > 100:
+                    pendentes.pop(next(iter(pendentes)))
+                botoes = [
+                    [
+                        InlineKeyboardButton("✅ Ciente", callback_data=f"la:{token}"),
+                        InlineKeyboardButton(
+                            "⏰ +10 min", callback_data=f"lr:{token}"
+                        ),
+                    ]
+                ]
+                if evento.get("htmlLink"):
+                    botoes.append(
+                        [
+                            InlineKeyboardButton(
+                                "Abrir no Google Agenda", url=evento["htmlLink"]
+                            )
+                        ]
+                    )
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=mensagem,
+                    reply_markup=InlineKeyboardMarkup(botoes),
+                )
                 marcar_notificacao_enviada(evento["id"], inicio_iso, chat_id)
 
         limpar_notificacoes_antigas()
-    except Exception:
+        LAST_REMINDER_ERROR = None
+    except Exception as erro:
+        LAST_REMINDER_ERROR = str(erro)
         LOGGER.exception("Falha ao verificar lembretes")
+    finally:
+        LAST_REMINDER_CHECK = datetime.now(TZ)
+
+
+async def enviar_lembrete_adiado(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.bot.send_message(
+        chat_id=context.job.data["chat_id"],
+        text="⏰ Lembrete adiado:\n" + context.job.data["mensagem"],
+    )
+
+
+async def callback_lembrete(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if not role_do_usuario(query.from_user.id):
+        await query.answer("Telegram não autorizado.", show_alert=True)
+        return
+    acao, token = query.data.split(":", 1)
+    pendentes = context.application.bot_data.get("lembretes_interativos", {})
+    dados = pendentes.pop(token, None)
+    if not dados:
+        await query.answer("Este lembrete expirou.", show_alert=True)
+        return
+    await query.answer()
+    if acao == "lr":
+        context.job_queue.run_once(
+            enviar_lembrete_adiado,
+            when=timedelta(minutes=10),
+            data=dados,
+            name=f"lembrete-adiado-{token}",
+        )
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("👍 Vou lembrar novamente em 10 minutos.")
+    else:
+        await query.edit_message_reply_markup(reply_markup=None)
+
+
+async def verificar_resumos_diarios(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        agora = datetime.now(TZ)
+        with conectar_banco() as conexao:
+            usuarios = conexao.execute(
+                "SELECT role, chat_id FROM usuarios"
+            ).fetchall()
+        inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+        fim = inicio + timedelta(days=1)
+        eventos_do_dia = buscar_eventos(inicio, fim)
+        for usuario in usuarios:
+            role = usuario["role"]
+            horario = obter_configuracao(role, "resumo_diario", "desligado")
+            if horario == "desligado" or horario != agora.strftime("%H:%M"):
+                continue
+            with conectar_banco() as conexao:
+                enviado = conexao.execute(
+                    "SELECT 1 FROM resumos_enviados WHERE role = ? AND data = ?",
+                    (role, agora.date().isoformat()),
+                ).fetchone()
+            if enviado:
+                continue
+            eventos = [
+                evento for evento in eventos_do_dia
+                if responsavel_do_evento(evento) in {role, "Ambos"}
+            ]
+            mensagem = "☀️ Bom dia!\n\n" + formatar_agenda(eventos, "hoje")
+            await context.bot.send_message(chat_id=usuario["chat_id"], text=mensagem)
+            with conectar_banco() as conexao:
+                conexao.execute(
+                    "INSERT OR IGNORE INTO resumos_enviados (role, data, sent_at) VALUES (?, ?, ?)",
+                    (role, agora.date().isoformat(), agora.isoformat()),
+                )
+        limite = (agora.date() - timedelta(days=90)).isoformat()
+        with conectar_banco() as conexao:
+            conexao.execute("DELETE FROM resumos_enviados WHERE data < ?", (limite,))
+    except Exception:
+        LOGGER.exception("Falha ao enviar resumo diário")
 
 
 async def configurar_jobs(application: Application) -> None:
@@ -2547,6 +3568,12 @@ async def configurar_jobs(application: Application) -> None:
         interval=REMINDER_CHECK_SECONDS,
         first=5,
         name="lembretes-agenda",
+    )
+    application.job_queue.run_repeating(
+        verificar_resumos_diarios,
+        interval=60,
+        first=10,
+        name="resumos-diarios",
     )
 
 
@@ -2569,10 +3596,27 @@ def main() -> None:
     app.add_handler(CommandHandler("tarefa", tarefa))
     app.add_handler(CommandHandler("tarefas", tarefas))
     app.add_handler(CommandHandler("concluir", concluir))
+    app.add_handler(CommandHandler("editar_tarefa", editar_tarefa_cmd))
+    app.add_handler(CommandHandler("excluir_tarefa", excluir_tarefa_cmd))
+    app.add_handler(CommandHandler("livres", livres))
+    app.add_handler(CommandHandler("preferencia", preferencia))
+    app.add_handler(CommandHandler("preferencias", preferencias))
+    app.add_handler(CommandHandler("remover_preferencia", remover_preferencia_cmd))
+    app.add_handler(CommandHandler("salvar_rotina", salvar_rotina_cmd))
+    app.add_handler(CommandHandler("aplicar_rotina", aplicar_rotina_cmd))
+    app.add_handler(CommandHandler("rotinas", rotinas_cmd))
+    app.add_handler(CommandHandler("resumo_diario", resumo_diario_cmd))
+    app.add_handler(CommandHandler("desfazer", desfazer_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("limpar_conversa", limpar_conversa))
     app.add_handler(CommandHandler("versao", versao))
     app.add_handler(CallbackQueryHandler(callback_criacao, pattern=r"^g[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_tarefa, pattern=r"^t[ca]:"))
+    app.add_handler(
+        CallbackQueryHandler(callback_alteracao_tarefa, pattern=r"^t(?:uc|ua|dc|da):")
+    )
+    app.add_handler(CallbackQueryHandler(callback_desfazer, pattern=r"^u[ca]:"))
+    app.add_handler(CallbackQueryHandler(callback_lembrete, pattern=r"^l[ra]:"))
     app.add_handler(CallbackQueryHandler(callback_edicao, pattern=r"^e[sca]:"))
     app.add_handler(
         CallbackQueryHandler(callback_cancelamento, pattern=r"^c[sca]:")

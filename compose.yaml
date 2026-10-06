@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: ${APP_VERSION:-2.2.1}
+        APP_VERSION: ${APP_VERSION:-3.0.0}
         BUILD_COMMIT: ${BUILD_COMMIT:-local}
     container_name: agenda-bot
     restart: unless-stopped
@@ -40,10 +40,17 @@ services:
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_KEEP_ALIVE: "30s"
       OLLAMA_CONTEXT_LENGTH: "1024"
+      OLLAMA_NO_CLOUD: "true"
     volumes:
       - ollama-data:/root/.ollama
     mem_limit: 1800m
     cpus: 0.80
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     logging:
       driver: local
       options:
