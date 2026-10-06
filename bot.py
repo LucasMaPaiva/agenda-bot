@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -11,7 +12,7 @@ from unicodedata import combining, normalize
 from zoneinfo import ZoneInfo
 
 from google import genai
-from google.genai import errors
+from google.genai import errors, types
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -24,6 +25,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
+GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"))
 GOOGLE_SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_FILE"]
 CALENDAR_ID = os.environ["CALENDAR_ID"]
 TIMEZONE = os.environ.get("TIMEZONE", "America/Boa_Vista")
@@ -49,7 +51,13 @@ REGISTRATION_CODES = {
     "Letícia": LETICIA_REGISTRATION_CODE,
 }
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(
+        timeout=GEMINI_TIMEOUT_SECONDS * 1000,
+        retry_options=types.HttpRetryOptions(attempts=1),
+    ),
+)
 
 EVENTO_SCHEMA = {
     "type": "object",
@@ -200,6 +208,7 @@ def gerar_resposta_gemini(prompt: str):
     config = {
         "response_mime_type": "application/json",
         "response_json_schema": EVENTO_SCHEMA,
+        "automatic_function_calling": {"disable": True},
     }
 
     for indice, modelo in enumerate(modelos):
@@ -319,6 +328,10 @@ def criar_evento_calendar(evento: dict) -> bool:
     }
     calendar_service.events().insert(calendarId=CALENDAR_ID, body=body).execute()
     return True
+
+
+def criar_eventos_calendar(eventos: list[dict]) -> int:
+    return sum(criar_evento_calendar(evento) for evento in eventos)
 
 
 def texto_normalizado(texto: str) -> str:
@@ -585,8 +598,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await responder_consulta(update, intervalo)
             return
 
-        eventos = extrair_eventos(texto)
-        quantidade_criada = sum(criar_evento_calendar(evento) for evento in eventos)
+        eventos = await asyncio.to_thread(extrair_eventos, texto)
+        quantidade_criada = await asyncio.to_thread(criar_eventos_calendar, eventos)
         quantidade_existente = len(eventos) - quantidade_criada
 
         primeiro_evento = eventos[0]

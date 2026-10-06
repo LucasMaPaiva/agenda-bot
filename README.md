@@ -35,6 +35,8 @@ aistudio.google.com → "Get API key" (tier gratuito cobre o uso pessoal).
 O bot usa `gemini-3.6-flash` por padrão e tenta `gemini-3.5-flash` automaticamente
 se o modelo principal estiver temporariamente indisponível. Para trocar os modelos
 sem alterar o código, defina `GEMINI_MODEL` e `GEMINI_FALLBACK_MODEL` no `.env`.
+Cada tentativa tem limite padrão de 30 segundos (`GEMINI_TIMEOUT_SECONDS`) e o bot
+continua recebendo atualizações do Telegram enquanto aguarda a resposta do modelo.
 
 ### 3. Google Calendar — Service Account
 1. console.cloud.google.com → criar um projeto (ou usar um existente)
