@@ -1,0 +1,19 @@
+services:
+  agenda-bot:
+    build: .
+    container_name: agenda-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/data/agenda-bot.db
+      GOOGLE_SERVICE_ACCOUNT_FILE: /run/secrets/google-service-account.json
+    volumes:
+      - ./data:/app/data
+      - ./service-account.json:/run/secrets/google-service-account.json:ro
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+    init: true

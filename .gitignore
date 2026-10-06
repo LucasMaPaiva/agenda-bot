@@ -3,3 +3,5 @@ service-account.json
 venv/
 __pycache__/
 *.pyc
+data/*
+!data/.gitkeep

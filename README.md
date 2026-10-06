@@ -2,6 +2,9 @@
 
 Bot que recebe mensagens em texto livre no Telegram e cria eventos direto no Google Agenda compartilhado do Matheus e da Letícia.
 
+Além de criar eventos, o bot consulta compromissos de hoje, amanhã ou da semana e
+envia lembretes no Telegram. Somente os dois usuários cadastrados podem usar o bot.
+
 **Documentação da rotina e das convenções (fonte da verdade):** `~/Documents/agenda/README.md`
 Esse bot segue as mesmas regras definidas lá:
 - Fuso horário: `America/Boa_Vista` (UTC-4)
@@ -10,8 +13,12 @@ Esse bot segue as mesmas regras definidas lá:
 
 ## Como funciona
 1. Telegram recebe a mensagem (ex: "lembrar de pagar a conta de luz sexta às 18h")
-2. O texto vai pra API do Gemini, que extrai título/data/hora/responsável em JSON
+2. O texto vai pra API do Gemini, que extrai título/data/hora/responsável em JSON estruturado
 3. O bot cria o evento via Google Calendar API, já com a cor e a descrição certas
+4. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
+
+Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
+"mostre minha agenda desta semana" são respondidas sem criar eventos.
 
 ## Setup
 
@@ -20,6 +27,10 @@ Fale com [@BotFather](https://t.me/BotFather) no Telegram → `/newbot` → guar
 
 ### 2. Chave da API do Gemini
 aistudio.google.com → "Get API key" (tier gratuito cobre o uso pessoal).
+
+O bot usa `gemini-3.6-flash` por padrão e tenta `gemini-3.5-flash` automaticamente
+se o modelo principal estiver temporariamente indisponível. Para trocar os modelos
+sem alterar o código, defina `GEMINI_MODEL` e `GEMINI_FALLBACK_MODEL` no `.env`.
 
 ### 3. Google Calendar — Service Account
 1. console.cloud.google.com → criar um projeto (ou usar um existente)
@@ -35,16 +46,65 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# editar .env com o token do Telegram, a chave do Gemini e o e-mail do calendário
+# editar .env com tokens, calendário e códigos diferentes para Matheus e Letícia
 ```
 
-### 5. Testar
+`DATABASE_PATH` guarda os cadastros e o histórico de lembretes enviados. Não apague
+esse arquivo enquanto o bot estiver em uso.
+
+### 5. Cadastrar os dois Telegrams
+
+Com o bot rodando, cada pessoa abre uma conversa privada com ele e usa seu código:
+
+```text
+/registrar matheus CODIGO_DO_MATHEUS
+/registrar leticia CODIGO_DA_LETICIA
+```
+
+O bot não recebe o número de telefone. O cadastro associa o identificador numérico e
+estável que o Telegram entrega ao bot quando a pessoa envia a mensagem.
+
+### 6. Testar localmente
 ```bash
 python3 bot.py
 ```
-Manda uma mensagem de teste pro bot no Telegram e confere se o evento aparece no calendário.
+Mande uma mensagem para criar um evento e teste uma consulta:
 
-### 6. Deixar rodando na VPS (systemd)
+```text
+Dentista amanhã às 9h, responsável Letícia
+O que tenho amanhã?
+```
+
+Também existe o comando explícito `/agenda hoje`, `/agenda amanhã` ou `/agenda semana`.
+
+### 7. Rodar com Docker
+
+O container não expõe portas porque o bot usa polling do Telegram. A credencial da
+conta de serviço é montada somente para leitura, e o banco SQLite fica persistido em
+`./data`.
+
+```bash
+docker compose up --build -d
+docker compose logs -f agenda-bot
+```
+
+O container usa `restart: unless-stopped`, nível de log `WARNING` e rotação limitada
+a dois arquivos comprimidos de 5 MB. Ele continua rodando após fechar o terminal e
+volta automaticamente depois de reiniciar o Docker ou o servidor.
+
+Para aplicar uma alteração futura:
+
+```bash
+docker compose up --build -d
+```
+
+Para parar:
+
+```bash
+docker compose down
+```
+
+### 8. Deixar rodando na VPS sem Docker (systemd)
 1. Copiar a pasta inteira pra VPS
 2. Ajustar os caminhos e o usuário em `systemd/agenda-bot.service`
 3. ```bash
@@ -58,3 +118,6 @@ Manda uma mensagem de teste pro bot no Telegram e confere se o evento aparece no
 - Não edita nem apaga eventos, só cria
 - Não lida com eventos recorrentes (cada mensagem cria um evento único)
 - Se o Gemini não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
+- Não adiciona convidados aos eventos: contas de serviço só podem preencher `attendees`
+  com delegação de domínio do Google Workspace. O calendário compartilhado continua
+  visível para Matheus e Letícia, e os lembretes de eventos "Ambos" vão para os dois.
