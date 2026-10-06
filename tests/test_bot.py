@@ -112,6 +112,24 @@ class AgendaLogicTest(unittest.TestCase):
             bot.eh_pedido_criacao_tarefa("coloca uma tarefa para comprar sabão")
         )
 
+    def test_consulta_de_horario_filtra_o_compromisso(self):
+        self.assertTrue(
+            bot.eh_consulta_de_compromisso_especifico(
+                "que horas é a academia hoje?"
+            )
+        )
+        eventos = [
+            {"summary": "Academia"},
+            {"summary": "Reunião Classe Companheiro"},
+        ]
+        self.assertEqual(
+            bot.filtrar_eventos_por_termo(eventos, "academia"), [eventos[0]]
+        )
+        self.assertEqual(
+            bot.filtrar_eventos_por_termo(eventos, "reunião companheiro"),
+            [eventos[1]],
+        )
+
     def test_contexto_de_conversa_inclui_conflito_calculado(self):
         inicio = datetime(2026, 10, 8, 18, 0, tzinfo=bot.TZ)
         eventos = [

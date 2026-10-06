@@ -63,7 +63,7 @@ DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
 MAX_RECURRENCE_OCCURRENCES = int(
     os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
 )
-APP_VERSION = os.environ.get("APP_VERSION", "2.1.0")
+APP_VERSION = os.environ.get("APP_VERSION", "2.1.1")
 BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
 GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
@@ -242,6 +242,10 @@ INTENCAO_SCHEMA = {
         "data": {"type": ["string", "null"], "format": "date"},
         "data_fim": {"type": ["string", "null"], "format": "date"},
         "pessoal": {"type": "boolean"},
+        "termo": {
+            "type": ["string", "null"],
+            "description": "Nome do compromisso específico consultado ou null",
+        },
         "numero_tarefa": {"type": ["integer", "null"]},
     },
     "required": [
@@ -249,6 +253,7 @@ INTENCAO_SCHEMA = {
         "data",
         "data_fim",
         "pessoal",
+        "termo",
         "numero_tarefa",
     ],
     "additionalProperties": False,
@@ -965,6 +970,15 @@ def eh_pedido_criacao_evento(texto: str) -> bool:
     )
 
 
+def eh_consulta_de_compromisso_especifico(texto: str) -> bool:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    return bool(
+        palavras & {"hora", "horario", "horas", "quando"}
+        and not eh_pedido_criacao_evento(texto)
+        and not eh_pedido_edicao(texto)
+    )
+
+
 def classificar_intencao(texto: str) -> dict:
     agora = datetime.now(TZ)
     prompt = f"""Classifique a intenção de uma mensagem enviada a um assistente familiar.
@@ -987,6 +1001,9 @@ Regras:
   encaixar algo é conversa, não criação.
 - Só use editar_evento ou cancelar_evento quando a alteração/exclusão for explícita.
 - Para consulta de agenda, resolva o período e preencha data/data_fim. data_fim é inclusiva.
+- Se a pessoa perguntar por um compromisso específico, como "que horas é a academia?",
+  preencha termo somente com o nome relevante, como "academia". Em consultas gerais,
+  como "o que tenho hoje?", use termo=null.
 - "Minha agenda" ou "o que eu tenho" usa pessoal=true; "nossa", "ambos" ou
   "o que temos" usa pessoal=false.
 - Para concluir tarefa, extraia o número em numero_tarefa.
@@ -1343,10 +1360,25 @@ def formatar_agenda(eventos: list[dict], rotulo: str) -> str:
     return "".join(linhas)
 
 
+def filtrar_eventos_por_termo(eventos: list[dict], termo: str) -> list[dict]:
+    termo_normalizado = texto_normalizado(termo).strip()
+    palavras_termo = set(re.findall(r"[a-z0-9]+", termo_normalizado))
+    if not palavras_termo:
+        return eventos
+    encontrados = []
+    for evento in eventos:
+        titulo_normalizado = texto_normalizado(evento.get("summary", ""))
+        palavras_titulo = set(re.findall(r"[a-z0-9]+", titulo_normalizado))
+        if termo_normalizado in titulo_normalizado or palavras_termo <= palavras_titulo:
+            encontrados.append(evento)
+    return encontrados
+
+
 async def responder_consulta(
     update: Update,
     intervalo: tuple[datetime, datetime, str],
     role: Optional[str] = None,
+    termo: Optional[str] = None,
 ) -> None:
     inicio, fim, rotulo = intervalo
     eventos = await asyncio.to_thread(buscar_eventos, inicio, fim)
@@ -1356,6 +1388,13 @@ async def responder_consulta(
             for evento in eventos
             if responsavel_do_evento(evento) in {role, "Ambos"}
         ]
+    if termo:
+        eventos = filtrar_eventos_por_termo(eventos, termo)
+        if not eventos:
+            await update.message.reply_text(
+                f'🔎 Não encontrei "{termo}" na agenda para {rotulo}.'
+            )
+            return
     await update.message.reply_text(formatar_agenda(eventos, rotulo))
 
 
@@ -2114,7 +2153,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await iniciar_edicao(update, context, texto)
             return
 
-        intervalo = intervalo_de_consulta(texto)
+        intervalo = (
+            None
+            if eh_consulta_de_compromisso_especifico(texto)
+            else intervalo_de_consulta(texto)
+        )
         if intervalo:
             await responder_consulta(
                 update, intervalo, role if consulta_eh_pessoal(texto) else None
@@ -2138,6 +2181,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 update,
                 intervalo_da_intencao(dados),
                 role if dados.get("pessoal") else None,
+                dados.get("termo"),
             )
         elif intencao == "criar_tarefa":
             await iniciar_criacao_tarefa(update, context, role, texto)
