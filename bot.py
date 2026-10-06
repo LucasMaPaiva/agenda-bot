@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from unicodedata import combining, normalize
@@ -30,6 +30,7 @@ TIMEZONE = os.environ.get("TIMEZONE", "America/Boa_Vista")
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "data/agenda-bot.db")
 REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "30"))
 REMINDER_CHECK_SECONDS = int(os.environ.get("REMINDER_CHECK_SECONDS", "60"))
+MAX_EVENT_RANGE_DAYS = int(os.environ.get("MAX_EVENT_RANGE_DAYS", "31"))
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
 LETICIA_REGISTRATION_CODE = os.environ.get("LETICIA_REGISTRATION_CODE", "")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "WARNING").upper()
@@ -55,6 +56,11 @@ EVENTO_SCHEMA = {
     "properties": {
         "titulo": {"type": "string"},
         "data": {"type": "string", "format": "date"},
+        "data_fim": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Último dia inclusivo de um intervalo ou null",
+        },
         "hora_inicio": {"type": "string", "description": "Horário no formato HH:MM"},
         "hora_fim": {
             "type": ["string", "null"],
@@ -62,7 +68,14 @@ EVENTO_SCHEMA = {
         },
         "responsavel": {"type": "string", "enum": ["Matheus", "Letícia", "Ambos"]},
     },
-    "required": ["titulo", "data", "hora_inicio", "hora_fim", "responsavel"],
+    "required": [
+        "titulo",
+        "data",
+        "data_fim",
+        "hora_inicio",
+        "hora_fim",
+        "responsavel",
+    ],
     "additionalProperties": False,
 }
 
@@ -209,13 +222,16 @@ def gerar_resposta_gemini(prompt: str):
     raise RuntimeError("Nenhum modelo Gemini disponível")
 
 
-def extrair_evento(texto: str) -> dict:
+def extrair_eventos(texto: str) -> list[dict]:
     agora = datetime.now(TZ)
     prompt = f"""Você extrai dados de eventos de agenda a partir de mensagens em português do Brasil.
 Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}), dia da semana: {agora.strftime('%A')}.
 
 Regras:
 - Resolva datas relativas ("hoje", "amanhã", nomes de dias da semana) com base na data atual acima.
+- Para uma única data, preencha "data" e use null em "data_fim".
+- Para um intervalo como "10/10 até 18/10", use o primeiro dia em "data" e o último em
+  "data_fim". O intervalo inclui os dois dias e representa um evento por dia.
 - Se não der pra saber a hora de término, use null.
 - Se não especificar responsável, use "Ambos".
 
@@ -224,21 +240,76 @@ Mensagem: "{texto}"
     resposta = gerar_resposta_gemini(prompt)
     dados = json.loads(resposta.text)
 
-    inicio = datetime.strptime(f"{dados['data']} {dados['hora_inicio']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
-    if dados.get("hora_fim"):
-        fim = datetime.strptime(f"{dados['data']} {dados['hora_fim']}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
-    else:
-        fim = inicio + timedelta(minutes=30)
+    primeira_data = date.fromisoformat(dados["data"])
+    ultima_data = date.fromisoformat(dados["data_fim"]) if dados.get("data_fim") else primeira_data
+    if ultima_data < primeira_data:
+        raise ValueError("A data final não pode ser anterior à data inicial.")
 
-    return {
-        "titulo": dados["titulo"],
-        "responsavel": dados.get("responsavel", "Ambos"),
-        "inicio": inicio,
-        "fim": fim,
-    }
+    quantidade_dias = (ultima_data - primeira_data).days + 1
+    if quantidade_dias > MAX_EVENT_RANGE_DAYS:
+        raise ValueError(
+            f"O intervalo tem {quantidade_dias} dias; o máximo permitido é "
+            f"{MAX_EVENT_RANGE_DAYS}."
+        )
+
+    eventos = []
+    for deslocamento in range(quantidade_dias):
+        data_evento = primeira_data + timedelta(days=deslocamento)
+        inicio = datetime.strptime(
+            f"{data_evento.isoformat()} {dados['hora_inicio']}", "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=TZ)
+        if dados.get("hora_fim"):
+            fim = datetime.strptime(
+                f"{data_evento.isoformat()} {dados['hora_fim']}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=TZ)
+        else:
+            fim = inicio + timedelta(minutes=30)
+
+        eventos.append(
+            {
+                "titulo": dados["titulo"],
+                "responsavel": dados.get("responsavel", "Ambos"),
+                "inicio": inicio,
+                "fim": fim,
+            }
+        )
+    return eventos
 
 
-def criar_evento_calendar(evento: dict) -> None:
+def evento_ja_existe(evento: dict) -> bool:
+    resposta = (
+        calendar_service.events()
+        .list(
+            calendarId=CALENDAR_ID,
+            timeMin=evento["inicio"].isoformat(),
+            timeMax=evento["fim"].isoformat(),
+            singleEvents=True,
+            q=evento["titulo"],
+            maxResults=10,
+        )
+        .execute()
+    )
+    for existente in resposta.get("items", []):
+        if existente.get("summary") != evento["titulo"]:
+            continue
+        inicio_existente = existente.get("start", {}).get("dateTime")
+        if not inicio_existente:
+            continue
+        inicio_existente = datetime.fromisoformat(
+            inicio_existente.replace("Z", "+00:00")
+        ).astimezone(TZ)
+        if (
+            inicio_existente == evento["inicio"]
+            and responsavel_do_evento(existente) == evento["responsavel"]
+        ):
+            return True
+    return False
+
+
+def criar_evento_calendar(evento: dict) -> bool:
+    if evento_ja_existe(evento):
+        return False
+
     body = {
         "summary": evento["titulo"],
         "description": f"Responsável: {evento['responsavel']}",
@@ -247,6 +318,7 @@ def criar_evento_calendar(evento: dict) -> None:
         "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
     }
     calendar_service.events().insert(calendarId=CALENDAR_ID, body=body).execute()
+    return True
 
 
 def texto_normalizado(texto: str) -> str:
@@ -513,12 +585,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await responder_consulta(update, intervalo)
             return
 
-        evento = extrair_evento(texto)
-        criar_evento_calendar(evento)
-        await update.message.reply_text(
-            f"✅ {evento['titulo']} — {evento['inicio'].strftime('%d/%m %H:%M')} "
-            f"({evento['responsavel']})"
-        )
+        eventos = extrair_eventos(texto)
+        quantidade_criada = sum(criar_evento_calendar(evento) for evento in eventos)
+        quantidade_existente = len(eventos) - quantidade_criada
+
+        primeiro_evento = eventos[0]
+        if len(eventos) == 1:
+            if quantidade_criada:
+                confirmacao = (
+                    f"✅ {primeiro_evento['titulo']} — "
+                    f"{primeiro_evento['inicio'].strftime('%d/%m %H:%M')} "
+                    f"({primeiro_evento['responsavel']})"
+                )
+            else:
+                confirmacao = (
+                    f"ℹ️ {primeiro_evento['titulo']} já estava na agenda — "
+                    f"{primeiro_evento['inicio'].strftime('%d/%m %H:%M')}"
+                )
+        else:
+            confirmacao = (
+                f"✅ {quantidade_criada} eventos de {primeiro_evento['titulo']} criados — "
+                f"{primeiro_evento['inicio'].strftime('%d/%m')} a "
+                f"{eventos[-1]['inicio'].strftime('%d/%m')}, "
+                f"às {primeiro_evento['inicio'].strftime('%H:%M')} "
+                f"({primeiro_evento['responsavel']})"
+            )
+            if quantidade_existente:
+                confirmacao += f"\nℹ️ {quantidade_existente} já existia(m) e não foi(ram) duplicado(s)."
+        await update.message.reply_text(confirmacao)
     except Exception as erro:
         LOGGER.exception("Falha ao processar mensagem")
         await update.message.reply_text(f"❌ Não consegui processar a mensagem: {erro}")

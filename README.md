@@ -20,6 +20,10 @@ Esse bot segue as mesmas regras definidas lá:
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
 
+Intervalos como "Evangelismo de 10/10 até 18/10 às 19h20" criam um evento em
+cada dia, incluindo a data inicial e a final. Por segurança, o limite padrão é de
+31 dias e pode ser alterado com `MAX_EVENT_RANGE_DAYS`.
+
 ## Setup
 
 ### 1. Bot do Telegram
@@ -116,7 +120,8 @@ docker compose down
 
 ## Limitações conhecidas (v1)
 - Não edita nem apaga eventos, só cria
-- Não lida com eventos recorrentes (cada mensagem cria um evento único)
+- Intervalos são criados como eventos diários independentes, não como uma recorrência
+  editável em bloco no Google Agenda
 - Se o Gemini não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
 - Não adiciona convidados aos eventos: contas de serviço só podem preencher `attendees`
   com delegação de domínio do Google Workspace. O calendário compartilhado continua
