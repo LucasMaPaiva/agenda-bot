@@ -260,11 +260,14 @@ def texto_normalizado(texto: str) -> str:
 def intervalo_de_consulta(texto: str) -> Optional[tuple[datetime, datetime, str]]:
     normalizado = texto_normalizado(texto)
     padroes_consulta = (
-        r"\bo que (?:eu )?tenho\b",
+        r"\b(?:o que|oq) (?:eu |nos )?(?:tenho|temos|tem)\b",
+        r"\b(?:tenho|temos|tem) (?:o que )?(?:pra |para )?"
+        r"(?:hoje|amanha|esta semana)\b",
         r"\bquais (?:sao )?(?:os )?(?:meus )?(?:compromissos|eventos)\b",
         r"\b(?:ver|mostrar|mostre|listar|liste|consultar) "
         r"(?:a |minha |meus )?(?:agenda|compromissos|eventos)\b",
-        r"\b(?:minha agenda|agenda de hoje|agenda de amanha)\b",
+        r"\b(?:minha agenda|agenda (?:de |pra |para )?"
+        r"(?:hoje|amanha|esta semana))\b",
     )
     if not any(re.search(padrao, normalizado) for padrao in padroes_consulta):
         return None
