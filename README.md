@@ -50,9 +50,10 @@ quebrar os testes, comandos e scripts atuais.
   do container e o último ciclo de lembretes.
 
 O modelo local nunca altera dados diretamente. Criação, edição e cancelamento continuam
-passando pelos fluxos de confirmação. O histórico de conversa mantém somente as duas últimas
-trocas na memória do processo e pode ser apagado com `/limpar_conversa`. As preferências
-salvas no SQLite continuam disponíveis após reinicializações.
+passando pelos fluxos de confirmação. As duas últimas trocas e o contexto da consulta são
+salvos no SQLite, separados por usuário, e continuam disponíveis após reinicializações.
+O histórico expira após sete dias e referências como "esse compromisso" expiram após 24
+horas. Tudo pode ser apagado com `/limpar_conversa`.
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
@@ -61,6 +62,8 @@ eventos de ambos. Consultas com "temos", "nossa" ou "todos" mostram a agenda con
 Também é possível limitar pelo período: "o que tenho à noite?", "minha agenda de
 manhã" ou "o que temos amanhã à tarde?". Os períodos são madrugada (00h–06h),
 manhã (06h–12h), tarde (12h–18h) e noite (18h–00h).
+Depois de uma consulta, continuações curtas preservam o contexto: "e à noite?",
+"e amanhã?" ou, quando só um evento foi mostrado, "muda esse compromisso para 20h".
 
 Pedidos como "cancelar academia de amanhã" ou `/cancelar academia amanhã` buscam
 os eventos correspondentes. Se houver mais de um, o bot pede para escolher e sempre

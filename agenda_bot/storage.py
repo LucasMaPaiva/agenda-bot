@@ -84,8 +84,141 @@ class AgendaRepository:
                     sent_at TEXT NOT NULL,
                     PRIMARY KEY (role, data)
                 );
+
+                CREATE TABLE IF NOT EXISTS conversas (
+                    role TEXT PRIMARY KEY,
+                    historico_json TEXT NOT NULL,
+                    historico_updated_at TEXT NOT NULL,
+                    estado_json TEXT NOT NULL,
+                    estado_updated_at TEXT NOT NULL
+                );
                 """
             )
+
+    def conversation_history(
+        self, role: str, limit: int = 4, max_age_days: int = 7
+    ) -> list[dict]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT historico_json, historico_updated_at
+                FROM conversas WHERE role = ?
+                """,
+                (role,),
+            ).fetchone()
+        if not row:
+            return []
+        try:
+            updated_at = datetime.fromisoformat(row["historico_updated_at"])
+        except (TypeError, ValueError):
+            return []
+        if datetime.now(self.timezone) - updated_at > timedelta(days=max_age_days):
+            return []
+        try:
+            history = json.loads(row["historico_json"])
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(history, list):
+            return []
+        return [item for item in history if isinstance(item, dict)][-limit:]
+
+    def save_conversation_turn(
+        self,
+        role: str,
+        user_message: str,
+        assistant_message: str,
+        max_messages: int = 4,
+    ) -> None:
+        now = datetime.now(self.timezone).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT historico_json, historico_updated_at
+                FROM conversas WHERE role = ?
+                """,
+                (role,),
+            ).fetchone()
+            try:
+                updated_at = (
+                    datetime.fromisoformat(row["historico_updated_at"])
+                    if row
+                    else None
+                )
+                history = (
+                    json.loads(row["historico_json"])
+                    if updated_at
+                    and datetime.now(self.timezone) - updated_at
+                    <= timedelta(days=7)
+                    else []
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                history = []
+            if not isinstance(history, list):
+                history = []
+            history.extend(
+                [
+                    {"role": "user", "content": user_message[:1000]},
+                    {"role": "assistant", "content": assistant_message[:2000]},
+                ]
+            )
+            history = history[-max_messages:]
+            connection.execute(
+                """
+                INSERT INTO conversas (
+                    role, historico_json, historico_updated_at,
+                    estado_json, estado_updated_at
+                ) VALUES (?, ?, ?, '{}', ?)
+                ON CONFLICT(role) DO UPDATE SET
+                    historico_json = excluded.historico_json,
+                    historico_updated_at = excluded.historico_updated_at
+                """,
+                (role, json.dumps(history, ensure_ascii=False), now, now),
+            )
+
+    def conversation_state(
+        self, role: str, max_age_hours: int = 24
+    ) -> dict:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT estado_json, estado_updated_at
+                FROM conversas WHERE role = ?
+                """,
+                (role,),
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            updated_at = datetime.fromisoformat(row["estado_updated_at"])
+        except (TypeError, ValueError):
+            return {}
+        if datetime.now(self.timezone) - updated_at > timedelta(hours=max_age_hours):
+            return {}
+        try:
+            state = json.loads(row["estado_json"])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    def save_conversation_state(self, role: str, state: dict) -> None:
+        now = datetime.now(self.timezone).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversas (
+                    role, historico_json, historico_updated_at,
+                    estado_json, estado_updated_at
+                ) VALUES (?, '[]', ?, ?, ?)
+                ON CONFLICT(role) DO UPDATE SET
+                    estado_json = excluded.estado_json,
+                    estado_updated_at = excluded.estado_updated_at
+                """,
+                (role, now, json.dumps(state, ensure_ascii=False), now),
+            )
+
+    def clear_conversation(self, role: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM conversas WHERE role = ?", (role,))
 
     def list_preferences(self, role: str) -> list[sqlite3.Row]:
         with self.connect() as connection:

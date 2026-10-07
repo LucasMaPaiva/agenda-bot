@@ -213,6 +213,70 @@ class AgendaLogicTest(unittest.TestCase):
             contexto = bot.contexto_agenda_para_conversa("Matheus")
         self.assertIn("Academia conflita com Reunião por 15 min", contexto)
 
+    def test_continuacao_reaproveita_consulta_anterior(self):
+        hoje = datetime.now(bot.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        estado = {
+            "tipo": "consulta_agenda",
+            "inicio": hoje.isoformat(),
+            "fim": (hoje + timedelta(days=1)).isoformat(),
+            "rotulo": "hoje",
+            "pessoal": True,
+            "termo": None,
+            "periodo": None,
+        }
+        with patch.object(bot, "obter_estado_conversa", return_value=estado):
+            noite = bot.resolver_continuacao_agenda("e à noite?", "Matheus")
+            amanha = bot.resolver_continuacao_agenda("e amanhã?", "Matheus")
+            consulta_completa = bot.resolver_continuacao_agenda(
+                "minha agenda amanhã", "Matheus"
+            )
+
+        self.assertEqual(noite["periodo"], "noite")
+        self.assertEqual(noite["intervalo"][0], hoje)
+        self.assertTrue(noite["pessoal"])
+        self.assertEqual(amanha["intervalo"][0].date(), hoje.date() + timedelta(days=1))
+        self.assertIsNone(consulta_completa)
+
+    def test_referencia_contextual_identifica_evento_unico(self):
+        evento = {
+            "id": "academia-1",
+            "titulo": "Academia",
+            "inicio": "2026-10-08T19:00:00-04:00",
+            "responsavel": "Matheus",
+        }
+        with patch.object(
+            bot, "obter_estado_conversa", return_value={"ultimo_evento": evento}
+        ):
+            referencia = bot.evento_referenciado(
+                "muda esse compromisso para 20h", "Matheus"
+            )
+        self.assertEqual(referencia, evento)
+
+    def test_edicao_contextual_usa_titulo_e_data_do_evento_referenciado(self):
+        dados = {
+            "termo": None,
+            "data": None,
+            "novo_titulo": None,
+            "nova_data": None,
+            "nova_hora_inicio": "20:00",
+            "nova_hora_fim": None,
+            "novo_responsavel": None,
+        }
+        referencia = {
+            "titulo": "Academia",
+            "inicio": "2026-10-08T19:00:00-04:00",
+        }
+        with patch.object(
+            bot, "gerar_json_operacao", return_value=json.dumps(dados)
+        ):
+            termo, inicio, fim, alteracoes = bot.extrair_edicao(
+                "muda esse compromisso para 20h", referencia
+            )
+        self.assertEqual(termo, "Academia")
+        self.assertEqual(inicio.date(), date(2026, 10, 8))
+        self.assertEqual(fim.date(), date(2026, 10, 9))
+        self.assertEqual(alteracoes["nova_hora_inicio"], "20:00")
+
     def test_operacao_usa_modelo_local_se_gemini_estiver_indisponivel(self):
         dados = self.evento_base()
         with (
@@ -399,6 +463,33 @@ class PersistenceTest(unittest.TestCase):
         )
         self.assertEqual(bot.obter_rotina("Matheus", "quinta normal")[0]["duracao"], 75)
         self.assertEqual(bot.ultima_acao_pendente("Matheus")["tipo"], "criacao")
+
+    def test_historico_e_estado_da_conversa_persistem_por_usuario(self):
+        estado = {
+            "tipo": "consulta_agenda",
+            "inicio": "2026-10-08T00:00:00-04:00",
+            "fim": "2026-10-09T00:00:00-04:00",
+            "rotulo": "amanhã",
+            "pessoal": True,
+            "termo": None,
+            "periodo": "noite",
+        }
+        bot.salvar_estado_conversa("Matheus", estado)
+        bot.salvar_turno_conversa(
+            "Matheus", "o que tenho amanhã?", "Você tem academia às 19h."
+        )
+
+        self.assertEqual(bot.obter_estado_conversa("Matheus"), estado)
+        self.assertEqual(
+            [item["role"] for item in bot.obter_historico_conversa("Matheus")],
+            ["user", "assistant"],
+        )
+        self.assertEqual(bot.obter_historico_conversa("Letícia"), [])
+        self.assertEqual(bot.obter_estado_conversa("Letícia"), {})
+
+        bot.apagar_conversa("Matheus")
+        self.assertEqual(bot.obter_historico_conversa("Matheus"), [])
+        self.assertEqual(bot.obter_estado_conversa("Matheus"), {})
 
 
 class MensagemFake:

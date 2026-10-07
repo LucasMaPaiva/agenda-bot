@@ -195,6 +195,26 @@ def limpar_notificacoes_antigas() -> None:
     _repository().clean_old_notifications()
 
 
+def obter_historico_conversa(role: str) -> list[dict]:
+    return _repository().conversation_history(role)
+
+
+def salvar_turno_conversa(role: str, usuario: str, assistente: str) -> None:
+    _repository().save_conversation_turn(role, usuario, assistente)
+
+
+def obter_estado_conversa(role: str) -> dict:
+    return _repository().conversation_state(role)
+
+
+def salvar_estado_conversa(role: str, estado: dict) -> None:
+    _repository().save_conversation_state(role, estado)
+
+
+def apagar_conversa(role: str) -> None:
+    _repository().clear_conversation(role)
+
+
 def gerar_resposta_ollama(
     mensagens: list[dict], schema: Optional[dict] = None, max_tokens: int = 512
 ) -> str:
@@ -439,7 +459,9 @@ Mensagem: "{texto}"
     return eventos
 
 
-def extrair_cancelamento(texto: str) -> tuple[Optional[str], datetime, datetime]:
+def extrair_cancelamento(
+    texto: str, referencia: Optional[dict] = None
+) -> tuple[Optional[str], datetime, datetime]:
     agora = datetime.now(TZ)
     prompt = f"""Você extrai critérios para localizar um evento que será cancelado no Google Agenda.
 Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
@@ -456,6 +478,11 @@ Regras:
 Mensagem: "{texto}"
 """
     dados = json.loads(gerar_json_operacao(prompt, CANCELAMENTO_SCHEMA))
+    if referencia:
+        dados["termo"] = referencia.get("titulo")
+        if referencia.get("inicio"):
+            dados["data"] = referencia["inicio"][:10]
+            dados["data_fim"] = None
 
     hoje = agora.replace(hour=0, minute=0, second=0, microsecond=0)
     if dados.get("data"):
@@ -480,7 +507,7 @@ Mensagem: "{texto}"
 
 
 def extrair_edicao(
-    texto: str,
+    texto: str, referencia: Optional[dict] = None
 ) -> tuple[Optional[str], datetime, datetime, dict]:
     agora = datetime.now(TZ)
     prompt = f"""Você extrai critérios para localizar e editar um evento no Google Agenda.
@@ -499,6 +526,10 @@ Regras:
 Mensagem: "{texto}"
 """
     dados = json.loads(gerar_json_operacao(prompt, EDICAO_SCHEMA))
+    if referencia:
+        dados["termo"] = referencia.get("titulo")
+        if referencia.get("inicio"):
+            dados["data"] = referencia["inicio"][:10]
 
     hoje = agora.replace(hour=0, minute=0, second=0, microsecond=0)
     if dados.get("data"):
@@ -800,6 +831,80 @@ def intervalo_da_intencao(dados: dict) -> tuple[datetime, datetime, str]:
         else f"{data_inicial.strftime('%d/%m')} a {data_final.strftime('%d/%m/%Y')}"
     )
     return inicio, fim, rotulo
+
+
+def resolver_continuacao_agenda(texto: str, role: str) -> Optional[dict]:
+    estado = obter_estado_conversa(role)
+    if estado.get("tipo") != "consulta_agenda":
+        return None
+
+    normalizado = texto_normalizado(texto).strip()
+    palavras = re.findall(r"[a-z0-9]+", normalizado)
+    periodo_explicito = periodo_do_texto(texto)
+    termo_data = re.search(
+        r"\b(hoje|hj|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|"
+        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
+        normalizado,
+    )
+    tem_semana = "semana" in palavras
+    palavras_de_consulta_completa = {
+        "agenda",
+        "compromisso",
+        "compromissos",
+        "evento",
+        "eventos",
+        "meu",
+        "minha",
+        "nosso",
+        "nossa",
+        "tenho",
+        "temos",
+    }
+    parece_continuacao = normalizado.startswith(
+        ("e ", "agora ", "entao ", "mas ")
+    ) or (
+        len(palavras) <= 3
+        and not set(palavras) & palavras_de_consulta_completa
+    )
+    if not parece_continuacao or not (periodo_explicito or termo_data or tem_semana):
+        return None
+
+    if tem_semana:
+        inicio = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        fim = inicio + timedelta(days=7 - inicio.weekday())
+        rotulo = "esta semana"
+    elif termo_data:
+        data_consulta = resolver_data_curta(termo_data.group(1))
+        inicio = datetime.combine(data_consulta, datetime.min.time(), tzinfo=TZ)
+        fim = inicio + timedelta(days=1)
+        hoje = datetime.now(TZ).date()
+        if data_consulta == hoje:
+            rotulo = "hoje"
+        elif data_consulta == hoje + timedelta(days=1):
+            rotulo = "amanhã"
+        else:
+            rotulo = data_consulta.strftime("%d/%m/%Y")
+    else:
+        try:
+            inicio = datetime.fromisoformat(estado["inicio"]).astimezone(TZ)
+            fim = datetime.fromisoformat(estado["fim"]).astimezone(TZ)
+        except (KeyError, TypeError, ValueError):
+            return None
+        rotulo = estado.get("rotulo", inicio.strftime("%d/%m/%Y"))
+
+    return {
+        "intervalo": (inicio, fim, rotulo),
+        "pessoal": bool(estado.get("pessoal")),
+        "termo": estado.get("termo"),
+        "periodo": periodo_explicito or estado.get("periodo"),
+    }
+
+
+def evento_referenciado(texto: str, role: str) -> Optional[dict]:
+    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
+    if not palavras & {"esse", "essa", "isso", "ele", "ela"}:
+        return None
+    return obter_estado_conversa(role).get("ultimo_evento")
 
 
 def mensagem_erro_usuario(acao: str, erro: Exception) -> str:
@@ -1141,8 +1246,11 @@ async def responder_consulta(
     role: Optional[str] = None,
     termo: Optional[str] = None,
     periodo: Optional[str] = None,
+    actor_role: Optional[str] = None,
+    texto_usuario: Optional[str] = None,
 ) -> None:
     inicio, fim, rotulo = intervalo
+    rotulo_base = rotulo
     eventos = await asyncio.to_thread(buscar_eventos, inicio, fim)
     if role:
         eventos = [
@@ -1161,11 +1269,74 @@ async def responder_consulta(
     if termo:
         eventos = filtrar_eventos_por_termo(eventos, termo)
         if not eventos:
-            await update.message.reply_text(
-                f'🔎 Não encontrei "{termo}" na agenda para {rotulo}.'
-            )
+            resposta = f'🔎 Não encontrei "{termo}" na agenda para {rotulo}.'
+            if actor_role:
+                await asyncio.to_thread(
+                    registrar_contexto_consulta,
+                    actor_role,
+                    inicio,
+                    fim,
+                    rotulo_base,
+                    role is not None,
+                    termo,
+                    periodo,
+                    eventos,
+                    texto_usuario,
+                    resposta,
+                )
+            await update.message.reply_text(resposta)
             return
-    await update.message.reply_text(formatar_agenda(eventos, rotulo))
+    resposta = formatar_agenda(eventos, rotulo)
+    if actor_role:
+        await asyncio.to_thread(
+            registrar_contexto_consulta,
+            actor_role,
+            inicio,
+            fim,
+            rotulo_base,
+            role is not None,
+            termo,
+            periodo,
+            eventos,
+            texto_usuario,
+            resposta,
+        )
+    await update.message.reply_text(resposta)
+
+
+def registrar_contexto_consulta(
+    role: str,
+    inicio: datetime,
+    fim: datetime,
+    rotulo: str,
+    pessoal: bool,
+    termo: Optional[str],
+    periodo: Optional[str],
+    eventos: list[dict],
+    texto_usuario: Optional[str],
+    resposta: str,
+) -> None:
+    estado = {
+        "tipo": "consulta_agenda",
+        "inicio": inicio.isoformat(),
+        "fim": fim.isoformat(),
+        "rotulo": rotulo,
+        "pessoal": pessoal,
+        "termo": termo,
+        "periodo": periodo,
+    }
+    if len(eventos) == 1:
+        evento = eventos[0]
+        estado["ultimo_evento"] = {
+            "id": evento.get("id"),
+            "titulo": evento.get("summary", "Sem título"),
+            "inicio": evento.get("start", {}).get("dateTime")
+            or evento.get("start", {}).get("date"),
+            "responsavel": responsavel_do_evento(evento),
+        }
+    salvar_estado_conversa(role, estado)
+    if texto_usuario:
+        salvar_turno_conversa(role, texto_usuario, resposta)
 
 
 def contexto_agenda_para_conversa(role: str) -> str:
@@ -1579,9 +1750,14 @@ def teclado_confirmacao_edicao(token: str, indice: int) -> InlineKeyboardMarkup:
 
 
 async def iniciar_edicao(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+    referencia: Optional[dict] = None,
 ) -> None:
-    termo, inicio, fim, alteracoes = await asyncio.to_thread(extrair_edicao, texto)
+    termo, inicio, fim, alteracoes = await asyncio.to_thread(
+        extrair_edicao, texto, referencia
+    )
     eventos = await asyncio.to_thread(
         buscar_eventos_para_cancelar, termo, inicio, fim
     )
@@ -1694,9 +1870,14 @@ async def callback_edicao(
 
 
 async def iniciar_cancelamento(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+    referencia: Optional[dict] = None,
 ) -> None:
-    termo, inicio, fim = await asyncio.to_thread(extrair_cancelamento, texto)
+    termo, inicio, fim = await asyncio.to_thread(
+        extrair_cancelamento, texto, referencia
+    )
     eventos = await asyncio.to_thread(
         buscar_eventos_para_cancelar, termo, inicio, fim
     )
@@ -1890,6 +2071,8 @@ async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             intervalo,
             role if consulta_eh_pessoal(texto) else None,
             periodo=periodo_do_texto(texto),
+            actor_role=role,
+            texto_usuario=f"/agenda {texto}",
         )
     except Exception as erro:
         LOGGER.exception("Falha ao consultar a agenda")
@@ -2155,11 +2338,13 @@ async def callback_alteracao_tarefa(
 async def limpar_conversa(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not role_do_usuario(update.effective_user.id):
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
         await update.message.reply_text("Telegram não autorizado. Envie /start.")
         return
     context.user_data.pop("historico_conversa", None)
-    await update.message.reply_text("🧹 Histórico da conversa limpo.")
+    await asyncio.to_thread(apagar_conversa, role)
+    await update.message.reply_text("🧹 Histórico e contexto da conversa limpos.")
 
 
 async def preferencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2442,7 +2627,7 @@ async def responder_conversa(
     role: str,
     texto: str,
 ) -> None:
-    historico = context.user_data.setdefault("historico_conversa", [])
+    historico = await asyncio.to_thread(obter_historico_conversa, role)
     agora = datetime.now(TZ)
     try:
         contexto_agenda = await asyncio.to_thread(contexto_agenda_para_conversa, role)
@@ -2475,13 +2660,12 @@ async def responder_conversa(
         {"role": "user", "content": texto},
     ]
     resposta = await asyncio.to_thread(gerar_conversa_llm, mensagens)
-    historico.extend(
-        [
-            {"role": "user", "content": texto[:1000]},
-            {"role": "assistant", "content": resposta[:2000]},
-        ]
+    await asyncio.to_thread(
+        salvar_turno_conversa,
+        role,
+        texto,
+        resposta,
     )
-    del historico[:-4]
     await update.message.reply_text(resposta)
 
 
@@ -2608,11 +2792,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if eh_pedido_cancelamento(texto):
-            await iniciar_cancelamento(update, context, texto)
+            await iniciar_cancelamento(
+                update, context, texto, evento_referenciado(texto, role)
+            )
             return
 
         if eh_pedido_edicao(texto):
-            await iniciar_edicao(update, context, texto)
+            await iniciar_edicao(
+                update, context, texto, evento_referenciado(texto, role)
+            )
+            return
+
+        continuacao = await asyncio.to_thread(
+            resolver_continuacao_agenda, texto, role
+        )
+        if continuacao:
+            await responder_consulta(
+                update,
+                continuacao["intervalo"],
+                role if continuacao["pessoal"] else None,
+                continuacao["termo"],
+                continuacao["periodo"],
+                role,
+                texto,
+            )
             return
 
         intervalo = (
@@ -2626,6 +2829,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 intervalo,
                 role if consulta_eh_pessoal(texto) else None,
                 periodo=periodo_do_texto(texto),
+                actor_role=role,
+                texto_usuario=texto,
             )
             return
 
@@ -2648,6 +2853,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 role if dados.get("pessoal") else None,
                 dados.get("termo"),
                 periodo_do_texto(texto),
+                role,
+                texto,
             )
         elif intencao == "criar_tarefa":
             await iniciar_criacao_tarefa(update, context, role, texto)
@@ -2662,9 +2869,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 await concluir_tarefa_da_lista(update, context, role, numero)
         elif intencao == "cancelar_evento":
-            await iniciar_cancelamento(update, context, texto)
+            await iniciar_cancelamento(
+                update, context, texto, evento_referenciado(texto, role)
+            )
         elif intencao == "editar_evento":
-            await iniciar_edicao(update, context, texto)
+            await iniciar_edicao(
+                update, context, texto, evento_referenciado(texto, role)
+            )
         elif intencao == "replicar_eventos":
             await iniciar_replicacao(update, context, role, texto)
         elif intencao == "sugerir_horarios":
