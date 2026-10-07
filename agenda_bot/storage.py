@@ -7,9 +7,10 @@ o formato do banco.
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 from zoneinfo import ZoneInfo
 
 
@@ -21,10 +22,18 @@ class AgendaRepository:
         self.timezone = timezone
         self.reminder_minutes = reminder_minutes
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -430,13 +439,18 @@ class AgendaRepository:
                 """
                 SELECT 1 FROM notificacoes
                 WHERE event_id = ? AND start_time = ? AND chat_id = ?
-                  AND reminder_minutes = ?
                 """,
-                (event_id, start, chat_id, self.reminder_minutes),
+                (event_id, start, chat_id),
             ).fetchone()
         return row is not None
 
-    def mark_notification_sent(self, event_id: str, start: str, chat_id: int) -> None:
+    def mark_notification_sent(
+        self,
+        event_id: str,
+        start: str,
+        chat_id: int,
+        reminder_minutes: Optional[int] = None,
+    ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
@@ -448,7 +462,7 @@ class AgendaRepository:
                     event_id,
                     start,
                     chat_id,
-                    self.reminder_minutes,
+                    reminder_minutes or self.reminder_minutes,
                     datetime.now(self.timezone).isoformat(),
                 ),
             )

@@ -48,7 +48,10 @@ quebrar os testes, comandos e scripts atuais.
 - Rotinas podem ser salvas a partir de um dia existente e aplicadas em outra data.
 - Resumos proativos opcionais enviam o plano da manhã e uma prévia da noite nos
   horários escolhidos, sem mensagem quando não há nada relevante.
-- Lembretes têm botões para marcar como ciente, abrir o evento ou adiar por 10 minutos.
+- Lembretes são classificados sem IA: eventos normais usam a antecedência padrão,
+  compromissos que exigem preparação avisam antes e eventos com localização usam o
+  perfil de deslocamento. Cada pessoa configura seus horários separadamente. Os avisos
+  têm botões para marcar como ciente, abrir o evento ou adiar por 10 minutos.
 - A última criação, edição ou exclusão de evento pode ser revertida com `/desfazer`
   durante 24 horas.
 - `/status` verifica Google Agenda, autorização do Google Tarefas, Ollama, memória
@@ -217,6 +220,11 @@ Use `/versao` para confirmar qual versão está rodando.
 
 /resumo_diario 06:00 20:30
 /resumo_diario desligar
+/lembretes
+/lembretes normal 30
+/lembretes preparo 60
+/lembretes deslocamento 45
+/lembretes desligar
 /desfazer
 /status
 ```
@@ -227,6 +235,12 @@ cria os eventos depois da confirmação.
 
 Em `/resumo_diario 06:00 20:30`, o primeiro horário é o resumo do dia e o segundo é
 a prévia do dia seguinte. Informar somente um horário mantém apenas o resumo da manhã.
+
+Os lembretes inteligentes enviam somente um aviso por compromisso. Eventos com o campo
+de localização preenchido usam o tempo de deslocamento. Consultas, exames, reuniões,
+aulas, academia e compromissos semelhantes usam o tempo de preparação; os demais usam
+o tempo normal. Os padrões são 45, 60 e 30 minutos, respectivamente, e cada usuário
+pode escolher valores entre 5 e 180 minutos.
 
 ### 8. Rodar com Docker
 

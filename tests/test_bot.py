@@ -6,7 +6,7 @@ import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 os.environ.update(
@@ -513,6 +513,18 @@ class AgendaLogicTest(unittest.TestCase):
         ollama.assert_not_called()
         gemini.assert_not_called()
 
+    def test_lembrete_inteligente_classifica_sem_ia(self):
+        self.assertEqual(
+            bot.reminder_kind(
+                {"summary": "Pagar boleto", "location": "Banco Central"}
+            ),
+            "deslocamento",
+        )
+        self.assertEqual(
+            bot.reminder_kind({"summary": "Consulta médica"}), "preparo"
+        )
+        self.assertEqual(bot.reminder_kind({"summary": "Pagar boleto"}), "normal")
+
     def test_conflito_entre_novo_evento_e_agenda_existente(self):
         inicio = datetime(2026, 10, 7, 18, 0, tzinfo=bot.TZ)
         novo = {
@@ -629,6 +641,92 @@ class PersistenceTest(unittest.TestCase):
             asyncio.run(bot.verificar_resumos_diarios(contexto))
         calendario.assert_not_called()
         tarefas.assert_not_called()
+
+    def test_lembrete_inteligente_respeita_antecedencia_e_nao_duplica(self):
+        class DataHoraFixa(datetime):
+            @classmethod
+            def now(cls, timezone=None):
+                return cls(2026, 10, 7, 8, 0, tzinfo=timezone or bot.TZ)
+
+        with bot.conectar_banco() as conexao:
+            conexao.execute(
+                """
+                INSERT INTO usuarios (
+                    role, telegram_user_id, chat_id, registered_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("Matheus", 1, 2, datetime.now(bot.TZ).isoformat()),
+            )
+        bot.salvar_configuracao("Matheus", "lembrete_preparo_minutos", "60")
+        inicio = datetime(2026, 10, 7, 8, 50, tzinfo=bot.TZ)
+        evento = {
+            "id": "dentista-1",
+            "summary": "Dentista",
+            "description": "Responsável: Matheus",
+            "start": {"dateTime": inicio.isoformat()},
+            "end": {"dateTime": (inicio + timedelta(hours=1)).isoformat()},
+        }
+        telegram = SimpleNamespace(send_message=AsyncMock())
+        contexto = SimpleNamespace(
+            bot=telegram,
+            application=SimpleNamespace(bot_data={}),
+        )
+        with (
+            patch.object(bot, "datetime", DataHoraFixa),
+            patch.object(bot, "buscar_eventos", return_value=[evento]) as calendario,
+        ):
+            asyncio.run(bot.verificar_lembretes(contexto))
+            asyncio.run(bot.verificar_lembretes(contexto))
+
+        self.assertEqual(telegram.send_message.await_count, 1)
+        mensagem = telegram.send_message.await_args.kwargs["text"]
+        self.assertIn("Hora de se preparar", mensagem)
+        self.assertIn("começa em 50 min", mensagem)
+        self.assertEqual(
+            calendario.call_args_list[0].args[1] - calendario.call_args_list[0].args[0],
+            timedelta(minutes=60),
+        )
+        with bot.conectar_banco() as conexao:
+            registro = conexao.execute(
+                "SELECT reminder_minutes FROM notificacoes WHERE event_id = ?",
+                ("dentista-1",),
+            ).fetchone()
+        self.assertEqual(registro["reminder_minutes"], 60)
+
+    def test_lembretes_desligados_nao_consultam_google(self):
+        with bot.conectar_banco() as conexao:
+            conexao.execute(
+                """
+                INSERT INTO usuarios (
+                    role, telegram_user_id, chat_id, registered_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("Letícia", 3, 4, datetime.now(bot.TZ).isoformat()),
+            )
+        bot.salvar_configuracao("Letícia", "lembretes_ativos", "nao")
+        contexto = SimpleNamespace(
+            bot=SimpleNamespace(send_message=AsyncMock()),
+            application=SimpleNamespace(bot_data={}),
+        )
+        with patch.object(bot, "buscar_eventos") as calendario:
+            asyncio.run(bot.verificar_lembretes(contexto))
+        calendario.assert_not_called()
+
+    def test_configuracao_de_lembrete_e_individual(self):
+        async def executar():
+            mensagem = MensagemFake()
+            contexto = SimpleNamespace(args=["preparo", "75"])
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=1), message=mensagem
+            )
+            with patch.object(bot, "role_do_usuario", return_value="Letícia"):
+                await bot.lembretes_cmd(update, contexto)
+            return mensagem
+
+        mensagem = asyncio.run(executar())
+        self.assertEqual(bot.configuracao_lembretes("Letícia")["preparo"], 75)
+        self.assertEqual(bot.configuracao_lembretes("Matheus")["preparo"], 60)
+        self.assertIn("75 minutos", mensagem.respostas[0][0])
 
 
 class MensagemFake:

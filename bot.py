@@ -58,6 +58,12 @@ from agenda_bot.planning import (
     prioritize_tasks,
     task_due_date,
 )
+from agenda_bot.reminders import (
+    REMINDER_DEFAULTS,
+    REMINDER_SETTING_KEYS,
+    reminder_heading,
+    reminder_kind,
+)
 from agenda_bot.storage import AgendaRepository
 from agenda_bot.settings import (
     APP_VERSION,
@@ -127,7 +133,7 @@ def _repository() -> AgendaRepository:
     return AgendaRepository(DATABASE_PATH, TZ, REMINDER_MINUTES)
 
 
-def conectar_banco() -> sqlite3.Connection:
+def conectar_banco():
     return _repository().connect()
 
 
@@ -195,8 +201,12 @@ def notificacao_enviada(event_id: str, inicio: str, chat_id: int) -> bool:
     return _repository().notification_sent(event_id, inicio, chat_id)
 
 
-def marcar_notificacao_enviada(event_id: str, inicio: str, chat_id: int) -> None:
-    _repository().mark_notification_sent(event_id, inicio, chat_id)
+def marcar_notificacao_enviada(
+    event_id: str, inicio: str, chat_id: int, antecedencia: Optional[int] = None
+) -> None:
+    _repository().mark_notification_sent(
+        event_id, inicio, chat_id, antecedencia
+    )
 
 
 def limpar_notificacoes_antigas() -> None:
@@ -233,6 +243,32 @@ def marcar_resumo_proativo_enviado(role: str, dia: date, tipo: str) -> None:
 
 def limpar_resumos_proativos_antigos() -> None:
     _repository().clean_old_proactive_summaries()
+
+
+def configuracao_lembretes(
+    role: str, valores: Optional[dict[str, str]] = None
+) -> dict:
+    def obter(chave: str, padrao: str) -> str:
+        if valores is not None:
+            return valores.get(chave, padrao)
+        return obter_configuracao(role, chave, padrao)
+
+    ativo = obter("lembretes_ativos", "sim").casefold() in {
+        "1",
+        "ligado",
+        "on",
+        "sim",
+        "true",
+    }
+    configuracao = {"ativo": ativo}
+    for tipo, padrao in REMINDER_DEFAULTS.items():
+        chave = REMINDER_SETTING_KEYS[tipo]
+        try:
+            minutos = int(obter(chave, str(padrao)))
+        except ValueError:
+            minutos = padrao
+        configuracao[tipo] = min(180, max(5, minutos))
+    return configuracao
 
 
 def gerar_resposta_ollama(
@@ -2253,7 +2289,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Principais comandos:\n"
             "/agenda · /editar · /replicar · /cancelar\n"
             "/tarefa · /tarefas · /concluir · /editar_tarefa · /excluir_tarefa\n"
-            "/livres · /planejar · /preferencias · /rotinas · /resumo_diario\n"
+            "/livres · /planejar · /preferencias · /rotinas\n"
+            "/lembretes · /resumo_diario\n"
             "/desfazer · /status · /versao"
         )
     else:
@@ -2875,6 +2912,76 @@ async def resumo_diario_cmd(
     await update.message.reply_text(mensagem)
 
 
+async def lembretes_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if not context.args:
+        configuracao = configuracao_lembretes(role)
+        estado = "ligados" if configuracao["ativo"] else "desligados"
+        await update.message.reply_text(
+            f"🔔 Lembretes de {role}: {estado}\n"
+            f"Normal: {configuracao['normal']} min antes\n"
+            f"Preparação: {configuracao['preparo']} min antes\n"
+            f"Com localização: {configuracao['deslocamento']} min antes\n\n"
+            "Ajuste com /lembretes normal 30, /lembretes preparo 60 ou "
+            "/lembretes deslocamento 45."
+        )
+        return
+    if len(context.args) == 1 and context.args[0].casefold() in {
+        "ligar",
+        "ligado",
+        "on",
+        "desligar",
+        "desligado",
+        "off",
+    }:
+        ligar = context.args[0].casefold() in {"ligar", "ligado", "on"}
+        salvar_configuracao(role, "lembretes_ativos", "sim" if ligar else "nao")
+        await update.message.reply_text(
+            f"✅ Lembretes {'ligados' if ligar else 'desligados'} para {role}."
+        )
+        return
+    aliases = {
+        "normal": "normal",
+        "preparo": "preparo",
+        "preparacao": "preparo",
+        "preparação": "preparo",
+        "deslocamento": "deslocamento",
+        "saida": "deslocamento",
+        "saída": "deslocamento",
+    }
+    tipo = aliases.get(context.args[0].casefold()) if context.args else None
+    if (
+        len(context.args) != 2
+        or not tipo
+        or not context.args[1].isdigit()
+    ):
+        await update.message.reply_text(
+            "Use: /lembretes normal 30, /lembretes preparo 60, "
+            "/lembretes deslocamento 45 ou /lembretes desligar."
+        )
+        return
+    minutos = int(context.args[1])
+    if minutos < 5 or minutos > 180:
+        await update.message.reply_text(
+            "A antecedência deve ficar entre 5 e 180 minutos."
+        )
+        return
+    salvar_configuracao(role, REMINDER_SETTING_KEYS[tipo], str(minutos))
+    nomes = {
+        "normal": "normal",
+        "preparo": "de preparação",
+        "deslocamento": "com localização",
+    }
+    await update.message.reply_text(
+        f"✅ Lembrete {nomes[tipo]} ajustado para {minutos} minutos antes."
+    )
+
+
 async def desfazer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     role = role_do_usuario(update.effective_user.id)
     if not role:
@@ -3207,28 +3314,90 @@ async def verificar_lembretes(context: ContextTypes.DEFAULT_TYPE) -> None:
     global LAST_REMINDER_CHECK, LAST_REMINDER_ERROR
     try:
         agora = datetime.now(TZ)
-        fim_da_janela = agora + timedelta(minutes=REMINDER_MINUTES)
+        with conectar_banco() as conexao:
+            usuarios = conexao.execute(
+                "SELECT role, chat_id FROM usuarios"
+            ).fetchall()
+            configuracoes_salvas = conexao.execute(
+                """
+                SELECT role, chave, valor FROM configuracoes
+                WHERE chave IN (
+                    'lembretes_ativos',
+                    'lembrete_normal_minutos',
+                    'lembrete_preparo_minutos',
+                    'lembrete_deslocamento_minutos'
+                )
+                """
+            ).fetchall()
+        valores_por_role = {}
+        for item in configuracoes_salvas:
+            valores_por_role.setdefault(item["role"], {})[item["chave"]] = item[
+                "valor"
+            ]
+        configuracoes = {
+            usuario["role"]: configuracao_lembretes(
+                usuario["role"], valores_por_role.get(usuario["role"], {})
+            )
+            for usuario in usuarios
+        }
+        usuarios_ativos = {
+            usuario["role"]: usuario
+            for usuario in usuarios
+            if configuracoes[usuario["role"]]["ativo"]
+        }
+        if not usuarios_ativos:
+            limpar_notificacoes_antigas()
+            LAST_REMINDER_ERROR = None
+            return
+
+        maior_antecedencia = max(
+            max(
+                configuracao["normal"],
+                configuracao["preparo"],
+                configuracao["deslocamento"],
+            )
+            for role, configuracao in configuracoes.items()
+            if role in usuarios_ativos
+        )
+        fim_da_janela = agora + timedelta(minutes=maior_antecedencia)
         eventos = buscar_eventos(agora, fim_da_janela)
 
         for evento in eventos:
             inicio = inicio_do_evento(evento)
-            if not inicio or inicio < agora:
+            event_id = evento.get("id")
+            if not event_id or not inicio or inicio < agora:
                 continue
             inicio_iso = inicio.isoformat()
             responsavel = responsavel_do_evento(evento)
-            minutos = max(0, int((inicio - agora).total_seconds() // 60))
-            titulo = evento.get("summary", "Sem título")
-            mensagem = (
-                f"⏰ Lembrete: compromisso em {minutos} min\n"
-                f"📅 {titulo}\n"
-                f"🕒 {inicio.strftime('%d/%m às %H:%M')}\n"
-                f"👤 {responsavel}"
+            tipo = reminder_kind(evento)
+            segundos = max(0, int((inicio - agora).total_seconds()))
+            minutos = max(1, (segundos + 59) // 60)
+            roles = (
+                ("Matheus", "Letícia")
+                if responsavel == "Ambos"
+                else (responsavel,)
             )
 
-            for usuario in destinatarios_do_evento(responsavel):
-                chat_id = usuario["chat_id"]
-                if notificacao_enviada(evento["id"], inicio_iso, chat_id):
+            for role in roles:
+                usuario = usuarios_ativos.get(role)
+                if not usuario:
                     continue
+                antecedencia = configuracoes[role][tipo]
+                if segundos > antecedencia * 60:
+                    continue
+                chat_id = usuario["chat_id"]
+                if notificacao_enviada(event_id, inicio_iso, chat_id):
+                    continue
+                titulo = evento.get("summary", "Sem título")[:120]
+                mensagem = (
+                    f"{reminder_heading(tipo)}: começa em {minutos} min\n"
+                    f"📅 {titulo}\n"
+                    f"🕒 {inicio.strftime('%d/%m às %H:%M')}\n"
+                    f"👤 {responsavel}"
+                )
+                local = evento.get("location", "").strip()
+                if local:
+                    mensagem += f"\n📍 {local[:160]}"
                 token = secrets.token_hex(4)
                 pendentes = context.application.bot_data.setdefault(
                     "lembretes_interativos", {}
@@ -3257,7 +3426,9 @@ async def verificar_lembretes(context: ContextTypes.DEFAULT_TYPE) -> None:
                     text=mensagem,
                     reply_markup=InlineKeyboardMarkup(botoes),
                 )
-                marcar_notificacao_enviada(evento["id"], inicio_iso, chat_id)
+                marcar_notificacao_enviada(
+                    event_id, inicio_iso, chat_id, antecedencia
+                )
 
         limpar_notificacoes_antigas()
         LAST_REMINDER_ERROR = None
@@ -3403,6 +3574,7 @@ def main() -> None:
     app.add_handler(CommandHandler("salvar_rotina", salvar_rotina_cmd))
     app.add_handler(CommandHandler("aplicar_rotina", aplicar_rotina_cmd))
     app.add_handler(CommandHandler("rotinas", rotinas_cmd))
+    app.add_handler(CommandHandler("lembretes", lembretes_cmd))
     app.add_handler(CommandHandler("resumo_diario", resumo_diario_cmd))
     app.add_handler(CommandHandler("desfazer", desfazer_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
