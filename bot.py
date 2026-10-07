@@ -3,21 +3,15 @@ from difflib import SequenceMatcher
 import hmac
 import json
 import logging
-import os
 import re
 import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
-from unicodedata import combining, normalize
-from zoneinfo import ZoneInfo
 
 from google import genai
-from google.auth.transport.requests import Request
 from google.genai import errors, types
-from dotenv import load_dotenv
-from google.oauth2.credentials import Credentials as UserCredentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -32,61 +26,67 @@ from telegram.ext import (
     filters,
 )
 
-load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
-GEMINI_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"))
-OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "false").casefold() in {
-    "1",
-    "true",
-    "yes",
-    "sim",
-}
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:1b")
-OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "60"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
-OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30s")
-LLM_FALLBACK_TO_GEMINI = os.environ.get(
-    "LLM_FALLBACK_TO_GEMINI", "true"
-).casefold() in {"1", "true", "yes", "sim"}
-GOOGLE_SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_FILE"]
-CALENDAR_ID = os.environ["CALENDAR_ID"]
-TIMEZONE = os.environ.get("TIMEZONE", "America/Boa_Vista")
-DATABASE_PATH = os.environ.get("DATABASE_PATH", "data/agenda-bot.db")
-REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "30"))
-REMINDER_CHECK_SECONDS = int(os.environ.get("REMINDER_CHECK_SECONDS", "60"))
-MAX_EVENT_RANGE_DAYS = int(os.environ.get("MAX_EVENT_RANGE_DAYS", "31"))
-DEFAULT_RECURRENCE_DAYS = int(os.environ.get("DEFAULT_RECURRENCE_DAYS", "90"))
-MAX_RECURRENCE_OCCURRENCES = int(
-    os.environ.get("MAX_RECURRENCE_OCCURRENCES", "100")
+from agenda_bot.schemas import (
+    CANCELAMENTO_SCHEMA,
+    EDICAO_SCHEMA,
+    EVENTO_SCHEMA,
+    INTENCAO_SCHEMA,
+    REPLICACAO_SCHEMA,
+    TAREFA_SCHEMA,
 )
-APP_VERSION = os.environ.get("APP_VERSION", "3.0.0")
-BUILD_COMMIT = os.environ.get("BUILD_COMMIT", "não informado")
-GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
-MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
-LETICIA_REGISTRATION_CODE = os.environ.get("LETICIA_REGISTRATION_CODE", "")
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "WARNING").upper()
-TZ = ZoneInfo(TIMEZONE)
-STARTED_AT = datetime.now(TZ)
+from agenda_bot.google_tasks import GoogleTasksGateway
+from agenda_bot.intent_rules import (
+    consulta_eh_pessoal,
+    eh_consulta_agenda,
+    eh_consulta_de_compromisso_especifico,
+    eh_pedido_cancelamento,
+    eh_pedido_criacao_evento,
+    eh_pedido_criacao_tarefa,
+    eh_pedido_edicao,
+    eh_pedido_replicacao,
+    intervalo_de_consulta,
+    pedido_horarios_livres,
+    periodo_do_texto,
+    resolver_data_curta,
+    texto_normalizado,
+)
+from agenda_bot.storage import AgendaRepository
+from agenda_bot.settings import (
+    APP_VERSION,
+    BUILD_COMMIT,
+    CALENDAR_ID,
+    COLOR_BY_RESPONSAVEL,
+    DATABASE_PATH,
+    DEFAULT_RECURRENCE_DAYS,
+    GEMINI_API_KEY,
+    GEMINI_FALLBACK_MODEL,
+    GEMINI_MODEL,
+    GEMINI_TIMEOUT_SECONDS,
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    GOOGLE_TASKS_TOKEN_DIR,
+    LLM_FALLBACK_TO_GEMINI,
+    LOG_LEVEL,
+    MAX_EVENT_RANGE_DAYS,
+    MAX_RECURRENCE_OCCURRENCES,
+    OLLAMA_BASE_URL,
+    OLLAMA_ENABLED,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_MODEL,
+    OLLAMA_NUM_CTX,
+    OLLAMA_TIMEOUT_SECONDS,
+    REGISTRATION_CODES,
+    REMINDER_CHECK_SECONDS,
+    REMINDER_MINUTES,
+    STARTED_AT,
+    TASKS_SCOPES,
+    TELEGRAM_BOT_TOKEN,
+    TIMEZONE,
+    TZ,
+)
+
 LAST_REMINDER_CHECK: Optional[datetime] = None
 LAST_REMINDER_ERROR: Optional[str] = None
 LOGGER = logging.getLogger(__name__)
-
-# Mesma legenda de cor usada no colorizeRotina.gs (Documents/agenda/scripts)
-COLOR_BY_RESPONSAVEL = {
-    "Matheus": "9",   # Blueberry / Azul
-    "Letícia": "4",   # Flamingo / Rosa
-    "Ambos": "2",     # Sage / Verde
-}
-
-REGISTRATION_CODES = {
-    "Matheus": MATHEUS_REGISTRATION_CODE,
-    "Letícia": LETICIA_REGISTRATION_CODE,
-}
 
 gemini_client = (
     genai.Client(
@@ -99,197 +99,6 @@ gemini_client = (
     if GEMINI_API_KEY
     else None
 )
-
-EVENTO_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "titulo": {"type": "string"},
-        "data": {"type": "string", "format": "date"},
-        "data_fim": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Último dia inclusivo de um intervalo ou null",
-        },
-        "hora_inicio": {"type": "string", "description": "Horário no formato HH:MM"},
-        "hora_fim": {
-            "type": ["string", "null"],
-            "description": "Horário no formato HH:MM ou null",
-        },
-        "responsavel": {"type": "string", "enum": ["Matheus", "Letícia", "Ambos"]},
-        "recorrencia": {
-            "type": "string",
-            "enum": ["nenhuma", "diaria", "semanal", "mensal"],
-        },
-        "dias_semana": {
-            "type": "array",
-            "items": {
-                "type": "string",
-                "enum": [
-                    "segunda",
-                    "terca",
-                    "quarta",
-                    "quinta",
-                    "sexta",
-                    "sabado",
-                    "domingo",
-                ],
-            },
-        },
-        "ordem_mes": {
-            "type": ["integer", "null"],
-            "description": "1 a 5 ou -1 para o último dia da semana no mês",
-        },
-    },
-    "required": [
-        "titulo",
-        "data",
-        "data_fim",
-        "hora_inicio",
-        "hora_fim",
-        "responsavel",
-        "recorrencia",
-        "dias_semana",
-        "ordem_mes",
-    ],
-    "additionalProperties": False,
-}
-
-CANCELAMENTO_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "termo": {
-            "type": ["string", "null"],
-            "description": "Título ou palavras relevantes do evento, sem verbos de exclusão",
-        },
-        "data": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Data inicial informada ou null",
-        },
-        "data_fim": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Última data inclusiva do intervalo ou null",
-        },
-    },
-    "required": ["termo", "data", "data_fim"],
-    "additionalProperties": False,
-}
-
-EDICAO_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "termo": {
-            "type": ["string", "null"],
-            "description": "Título atual ou palavras relevantes do evento",
-        },
-        "data": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Data atual usada para localizar o evento",
-        },
-        "novo_titulo": {"type": ["string", "null"]},
-        "nova_data": {"type": ["string", "null"], "format": "date"},
-        "nova_hora_inicio": {
-            "type": ["string", "null"],
-            "description": "Novo horário HH:MM ou null",
-        },
-        "nova_hora_fim": {
-            "type": ["string", "null"],
-            "description": "Novo horário HH:MM ou null",
-        },
-        "novo_responsavel": {
-            "type": ["string", "null"],
-            "enum": ["Matheus", "Letícia", "Ambos", None],
-        },
-    },
-    "required": [
-        "termo",
-        "data",
-        "novo_titulo",
-        "nova_data",
-        "nova_hora_inicio",
-        "nova_hora_fim",
-        "novo_responsavel",
-    ],
-    "additionalProperties": False,
-}
-
-TAREFA_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "titulo": {"type": "string"},
-        "notas": {"type": ["string", "null"]},
-        "prazo": {"type": ["string", "null"], "format": "date"},
-    },
-    "required": ["titulo", "notas", "prazo"],
-    "additionalProperties": False,
-}
-
-REPLICACAO_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "data_origem": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Dia do qual os eventos serão copiados",
-        },
-        "data_destino": {
-            "type": ["string", "null"],
-            "format": "date",
-            "description": "Dia para o qual os eventos serão copiados",
-        },
-        "termos": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Nomes dos eventos pedidos; vazio significa toda a rotina",
-        },
-    },
-    "required": ["data_origem", "data_destino", "termos"],
-    "additionalProperties": False,
-}
-
-INTENCAO_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "intencao": {
-            "type": "string",
-            "enum": [
-                "criar_evento",
-                "consultar_agenda",
-                "criar_tarefa",
-                "listar_tarefas",
-                "concluir_tarefa",
-                "cancelar_evento",
-                "editar_evento",
-                "replicar_eventos",
-                "sugerir_horarios",
-                "conversa",
-            ],
-        },
-        "data": {"type": ["string", "null"], "format": "date"},
-        "data_fim": {"type": ["string", "null"], "format": "date"},
-        "pessoal": {"type": "boolean"},
-        "termo": {
-            "type": ["string", "null"],
-            "description": "Nome do compromisso específico consultado ou null",
-        },
-        "numero_tarefa": {"type": ["integer", "null"]},
-        "duracao_minutos": {"type": ["integer", "null"]},
-    },
-    "required": [
-        "intencao",
-        "data",
-        "data_fim",
-        "pessoal",
-        "termo",
-        "numero_tarefa",
-        "duracao_minutos",
-    ],
-    "additionalProperties": False,
-}
-
-TASKS_SCOPES = ["https://www.googleapis.com/auth/tasks"]
 
 calendar_service = None
 
@@ -305,260 +114,85 @@ def obter_calendar_service():
     return calendar_service
 
 
+def _repository() -> AgendaRepository:
+    # Criado sob demanda para que testes e scripts possam trocar DATABASE_PATH.
+    return AgendaRepository(DATABASE_PATH, TZ, REMINDER_MINUTES)
+
+
 def conectar_banco() -> sqlite3.Connection:
-    conexao = sqlite3.connect(DATABASE_PATH)
-    conexao.row_factory = sqlite3.Row
-    return conexao
+    return _repository().connect()
 
 
 def inicializar_banco() -> None:
-    Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with conectar_banco() as conexao:
-        conexao.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS usuarios (
-                role TEXT PRIMARY KEY CHECK (role IN ('Matheus', 'Letícia')),
-                telegram_user_id INTEGER NOT NULL UNIQUE,
-                chat_id INTEGER NOT NULL,
-                registered_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS notificacoes (
-                event_id TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                chat_id INTEGER NOT NULL,
-                reminder_minutes INTEGER NOT NULL,
-                sent_at TEXT NOT NULL,
-                PRIMARY KEY (event_id, start_time, chat_id, reminder_minutes)
-            );
-
-            CREATE TABLE IF NOT EXISTS preferencias (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role TEXT NOT NULL,
-                texto TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS configuracoes (
-                role TEXT NOT NULL,
-                chave TEXT NOT NULL,
-                valor TEXT NOT NULL,
-                PRIMARY KEY (role, chave)
-            );
-
-            CREATE TABLE IF NOT EXISTS rotinas (
-                role TEXT NOT NULL,
-                nome TEXT NOT NULL,
-                eventos_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (role, nome)
-            );
-
-            CREATE TABLE IF NOT EXISTS acoes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role TEXT NOT NULL,
-                tipo TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                undone_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS resumos_enviados (
-                role TEXT NOT NULL,
-                data TEXT NOT NULL,
-                sent_at TEXT NOT NULL,
-                PRIMARY KEY (role, data)
-            );
-            """
-        )
+    _repository().initialize()
 
 
 def listar_preferencias(role: str) -> list[sqlite3.Row]:
-    with conectar_banco() as conexao:
-        return conexao.execute(
-            "SELECT id, texto FROM preferencias WHERE role = ? ORDER BY id", (role,)
-        ).fetchall()
+    return _repository().list_preferences(role)
 
 
 def adicionar_preferencia(role: str, texto: str) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            "INSERT INTO preferencias (role, texto, created_at) VALUES (?, ?, ?)",
-            (role, texto, datetime.now(TZ).isoformat()),
-        )
+    _repository().add_preference(role, texto)
 
 
 def remover_preferencia(role: str, indice: int) -> bool:
-    preferencias = listar_preferencias(role)
-    if indice < 1 or indice > len(preferencias):
-        return False
-    with conectar_banco() as conexao:
-        conexao.execute(
-            "DELETE FROM preferencias WHERE role = ? AND id = ?",
-            (role, preferencias[indice - 1]["id"]),
-        )
-    return True
+    return _repository().remove_preference(role, indice)
 
 
 def obter_configuracao(role: str, chave: str, padrao: str) -> str:
-    with conectar_banco() as conexao:
-        linha = conexao.execute(
-            "SELECT valor FROM configuracoes WHERE role = ? AND chave = ?",
-            (role, chave),
-        ).fetchone()
-    return linha["valor"] if linha else padrao
+    return _repository().get_setting(role, chave, padrao)
 
 
 def salvar_configuracao(role: str, chave: str, valor: str) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            """
-            INSERT INTO configuracoes (role, chave, valor) VALUES (?, ?, ?)
-            ON CONFLICT(role, chave) DO UPDATE SET valor = excluded.valor
-            """,
-            (role, chave, valor),
-        )
+    _repository().save_setting(role, chave, valor)
 
 
 def salvar_rotina(role: str, nome: str, eventos: list[dict]) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            """
-            INSERT INTO rotinas (role, nome, eventos_json, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(role, nome) DO UPDATE SET
-                eventos_json = excluded.eventos_json,
-                updated_at = excluded.updated_at
-            """,
-            (role, nome, json.dumps(eventos), datetime.now(TZ).isoformat()),
-        )
+    _repository().save_routine(role, nome, eventos)
 
 
 def obter_rotina(role: str, nome: str) -> Optional[list[dict]]:
-    with conectar_banco() as conexao:
-        linha = conexao.execute(
-            "SELECT eventos_json FROM rotinas WHERE role = ? AND nome = ?",
-            (role, nome),
-        ).fetchone()
-    return json.loads(linha["eventos_json"]) if linha else None
+    return _repository().get_routine(role, nome)
 
 
 def listar_rotinas(role: str) -> list[str]:
-    with conectar_banco() as conexao:
-        linhas = conexao.execute(
-            "SELECT nome FROM rotinas WHERE role = ? ORDER BY nome", (role,)
-        ).fetchall()
-    return [linha["nome"] for linha in linhas]
+    return _repository().list_routines(role)
 
 
 def registrar_acao(role: str, tipo: str, payload: dict) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            "INSERT INTO acoes (role, tipo, payload_json, created_at) VALUES (?, ?, ?, ?)",
-            (role, tipo, json.dumps(payload), datetime.now(TZ).isoformat()),
-        )
-        limite = (datetime.now(TZ) - timedelta(days=90)).isoformat()
-        conexao.execute("DELETE FROM acoes WHERE created_at < ?", (limite,))
+    _repository().record_action(role, tipo, payload)
 
 
 def ultima_acao_pendente(role: str) -> Optional[sqlite3.Row]:
-    limite = (datetime.now(TZ) - timedelta(hours=24)).isoformat()
-    with conectar_banco() as conexao:
-        return conexao.execute(
-            """
-            SELECT * FROM acoes
-            WHERE role = ? AND undone_at IS NULL AND created_at >= ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (role, limite),
-        ).fetchone()
+    return _repository().last_pending_action(role)
 
 
 def marcar_acao_desfeita(acao_id: int) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            "UPDATE acoes SET undone_at = ? WHERE id = ?",
-            (datetime.now(TZ).isoformat(), acao_id),
-        )
+    _repository().mark_action_undone(acao_id)
 
 
 def role_do_usuario(telegram_user_id: int) -> Optional[str]:
-    with conectar_banco() as conexao:
-        linha = conexao.execute(
-            "SELECT role FROM usuarios WHERE telegram_user_id = ?",
-            (telegram_user_id,),
-        ).fetchone()
-    return linha["role"] if linha else None
+    return _repository().user_role(telegram_user_id)
 
 
 def salvar_registro(role: str, telegram_user_id: int, chat_id: int) -> tuple[bool, str]:
-    with conectar_banco() as conexao:
-        dono_da_role = conexao.execute(
-            "SELECT telegram_user_id FROM usuarios WHERE role = ?", (role,)
-        ).fetchone()
-        role_do_id = conexao.execute(
-            "SELECT role FROM usuarios WHERE telegram_user_id = ?",
-            (telegram_user_id,),
-        ).fetchone()
-
-        if dono_da_role and dono_da_role["telegram_user_id"] != telegram_user_id:
-            return False, f"O cadastro de {role} já pertence a outro usuário."
-        if role_do_id and role_do_id["role"] != role:
-            return False, f"Este Telegram já está cadastrado como {role_do_id['role']}."
-
-        conexao.execute(
-            """
-            INSERT INTO usuarios (role, telegram_user_id, chat_id, registered_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(role) DO UPDATE SET
-                telegram_user_id = excluded.telegram_user_id,
-                chat_id = excluded.chat_id,
-                registered_at = excluded.registered_at
-            """,
-            (role, telegram_user_id, chat_id, datetime.now(TZ).isoformat()),
-        )
-    return True, f"Cadastro concluído como {role}."
+    return _repository().save_registration(role, telegram_user_id, chat_id)
 
 
 def destinatarios_do_evento(responsavel: str) -> list[sqlite3.Row]:
-    roles = ["Matheus", "Letícia"] if responsavel == "Ambos" else [responsavel]
-    placeholders = ",".join("?" for _ in roles)
-    with conectar_banco() as conexao:
-        return conexao.execute(
-            f"SELECT role, chat_id FROM usuarios WHERE role IN ({placeholders})",
-            roles,
-        ).fetchall()
+    return _repository().event_recipients(responsavel)
 
 
 def notificacao_enviada(event_id: str, inicio: str, chat_id: int) -> bool:
-    with conectar_banco() as conexao:
-        linha = conexao.execute(
-            """
-            SELECT 1 FROM notificacoes
-            WHERE event_id = ? AND start_time = ? AND chat_id = ?
-              AND reminder_minutes = ?
-            """,
-            (event_id, inicio, chat_id, REMINDER_MINUTES),
-        ).fetchone()
-    return linha is not None
+    return _repository().notification_sent(event_id, inicio, chat_id)
 
 
 def marcar_notificacao_enviada(event_id: str, inicio: str, chat_id: int) -> None:
-    with conectar_banco() as conexao:
-        conexao.execute(
-            """
-            INSERT OR IGNORE INTO notificacoes
-                (event_id, start_time, chat_id, reminder_minutes, sent_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (event_id, inicio, chat_id, REMINDER_MINUTES, datetime.now(TZ).isoformat()),
-        )
+    _repository().mark_notification_sent(event_id, inicio, chat_id)
 
 
 def limpar_notificacoes_antigas() -> None:
-    limite = (datetime.now(TZ) - timedelta(days=30)).isoformat()
-    with conectar_banco() as conexao:
-        conexao.execute("DELETE FROM notificacoes WHERE sent_at < ?", (limite,))
+    _repository().clean_old_notifications()
 
 
 def gerar_resposta_ollama(
@@ -943,25 +577,11 @@ def atualizar_evento_calendar(evento: dict) -> None:
 
 
 def caminho_token_tasks(role: str) -> Path:
-    nome = "matheus" if role == "Matheus" else "leticia"
-    return Path(GOOGLE_TASKS_TOKEN_DIR) / f"tasks-{nome}.json"
+    return GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).token_path(role)
 
 
 def tasks_service_do_usuario(role: str):
-    caminho = caminho_token_tasks(role)
-    if not caminho.is_file():
-        raise ValueError(
-            f"Google Tarefas ainda não foi conectado para {role}. "
-            f"Gere o arquivo {caminho.name}."
-        )
-    credenciais = UserCredentials.from_authorized_user_file(caminho, TASKS_SCOPES)
-    if credenciais.expired and credenciais.refresh_token:
-        credenciais.refresh(Request())
-        caminho.write_text(credenciais.to_json(), encoding="utf-8")
-        caminho.chmod(0o600)
-    if not credenciais.valid:
-        raise ValueError(f"A autorização do Google Tarefas de {role} expirou.")
-    return build("tasks", "v1", credentials=credenciais, cache_discovery=False)
+    return GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).service_for(role)
 
 
 def extrair_tarefa(texto: str) -> dict:
@@ -1016,53 +636,29 @@ Mensagem: {json.dumps(texto, ensure_ascii=False)}
 
 
 def criar_tarefa_google(role: str, tarefa: dict) -> dict:
-    body = {"title": tarefa["titulo"]}
-    if tarefa.get("notas"):
-        body["notes"] = tarefa["notas"]
-    if tarefa.get("prazo"):
-        body["due"] = f"{tarefa['prazo']}T00:00:00.000Z"
-    return (
-        tasks_service_do_usuario(role)
-        .tasks()
-        .insert(tasklist="@default", body=body)
-        .execute()
+    return GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).create(
+        role, tarefa
     )
 
 
 def listar_tarefas_google(role: str) -> list[dict]:
-    resposta = (
-        tasks_service_do_usuario(role)
-        .tasks()
-        .list(
-            tasklist="@default",
-            showCompleted=False,
-            showHidden=False,
-            maxResults=50,
-        )
-        .execute()
-    )
-    tarefas = resposta.get("items", [])
-    return sorted(tarefas, key=lambda item: (item.get("due", "9999"), item.get("title", "")))
+    return GoogleTasksGateway(
+        GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES
+    ).list_pending(role)
 
 
 def concluir_tarefa_google(role: str, task_id: str) -> None:
-    tasks_service_do_usuario(role).tasks().patch(
-        tasklist="@default",
-        task=task_id,
-        body={"status": "completed", "completed": datetime.now(TZ).isoformat()},
-    ).execute()
+    GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).complete(role, task_id)
 
 
 def editar_tarefa_google(role: str, task_id: str, titulo: str) -> None:
-    tasks_service_do_usuario(role).tasks().patch(
-        tasklist="@default", task=task_id, body={"title": titulo}
-    ).execute()
+    GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).edit(
+        role, task_id, titulo
+    )
 
 
 def excluir_tarefa_google(role: str, task_id: str) -> None:
-    tasks_service_do_usuario(role).tasks().delete(
-        tasklist="@default", task=task_id
-    ).execute()
+    GoogleTasksGateway(GOOGLE_TASKS_TOKEN_DIR, TZ, TASKS_SCOPES).delete(role, task_id)
 
 
 def evento_ja_existe(evento: dict) -> bool:
@@ -1134,189 +730,6 @@ def criar_eventos_calendar_com_ids(eventos: list[dict]) -> list[str]:
 
 def criar_eventos_calendar(eventos: list[dict]) -> int:
     return sum(criar_evento_calendar(evento) for evento in eventos)
-
-
-def texto_normalizado(texto: str) -> str:
-    return "".join(
-        caractere
-        for caractere in normalize("NFD", texto.casefold())
-        if not combining(caractere)
-    )
-
-
-def resolver_data_curta(texto: str) -> date:
-    normalizado = texto_normalizado(texto).strip()
-    hoje = datetime.now(TZ).date()
-    if normalizado in {"hoje", "hj"}:
-        return hoje
-    if normalizado in {"amanha", "amanhã"}:
-        return hoje + timedelta(days=1)
-    correspondencia = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", normalizado)
-    if correspondencia:
-        dia, mes, ano = correspondencia.groups()
-        ano_numero = int(ano) if ano else hoje.year
-        if ano and len(ano) == 2:
-            ano_numero += 2000
-        resultado = date(ano_numero, int(mes), int(dia))
-        if not ano and resultado < hoje:
-            resultado = resultado.replace(year=hoje.year + 1)
-        return resultado
-    dias = {
-        "segunda": 0,
-        "terca": 1,
-        "quarta": 2,
-        "quinta": 3,
-        "sexta": 4,
-        "sabado": 5,
-        "domingo": 6,
-    }
-    if normalizado in dias:
-        deslocamento = (dias[normalizado] - hoje.weekday()) % 7
-        return hoje + timedelta(days=deslocamento)
-    raise ValueError("use hoje, amanhã, um dia da semana ou uma data DD/MM")
-
-
-def pedido_horarios_livres(texto: str) -> Optional[tuple[date, int]]:
-    normalizado = texto_normalizado(texto)
-    sinais = (
-        "horario livre",
-        "horarios livres",
-        "onde cabe",
-        "quando cabe",
-        "posso encaixar",
-        "da pra encaixar",
-        "da para encaixar",
-        "tenho tempo",
-    )
-    if not any(sinal in normalizado for sinal in sinais):
-        return None
-
-    data_consulta = None
-    for termo in re.findall(
-        r"\b(?:hoje|hj|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|"
-        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
-        normalizado,
-    ):
-        try:
-            data_consulta = resolver_data_curta(termo)
-            break
-        except ValueError:
-            continue
-    if data_consulta is None:
-        data_consulta = datetime.now(TZ).date()
-
-    duracao = 60
-    horas = re.search(
-        r"\b(\d{1,2})\s*(?:h|hora|horas)"
-        r"(?:\s*(?:e\s*)?(\d{1,2})(?:\s*min)?)?",
-        normalizado,
-    )
-    minutos = re.search(r"\b(\d{1,3})\s*(?:min|minuto|minutos)\b", normalizado)
-    if horas:
-        duracao = int(horas.group(1)) * 60 + int(horas.group(2) or 0)
-    elif minutos:
-        duracao = int(minutos.group(1))
-    return data_consulta, duracao
-
-
-def eh_pedido_criacao_tarefa(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    return bool(
-        palavras & {"tarefa", "tarefas", "afazer", "afazeres"}
-        and palavras
-        & {
-            "adiciona",
-            "adicionar",
-            "adicione",
-            "anota",
-            "anotar",
-            "coloca",
-            "colocar",
-            "cria",
-            "criar",
-            "crie",
-            "lembra",
-            "lembrar",
-        }
-    )
-
-
-def eh_pedido_criacao_evento(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    verbos = palavras & {
-        "adiciona",
-        "adicionar",
-        "adicione",
-        "agenda",
-        "agendar",
-        "agende",
-        "coloca",
-        "colocar",
-        "cria",
-        "criar",
-        "crie",
-        "marca",
-        "marcar",
-        "marque",
-    }
-    sinais_agenda = palavras & {
-        "agenda",
-        "amanha",
-        "compromisso",
-        "compromissos",
-        "domingo",
-        "evento",
-        "eventos",
-        "hoje",
-        "quarta",
-        "quinta",
-        "reuniao",
-        "sabado",
-        "segunda",
-        "sexta",
-        "terca",
-    }
-    tem_data_ou_hora = bool(
-        re.search(
-            r"\b(?:\d{1,2}(?:h\d{0,2}|:\d{2})|\d{1,2}/\d{1,2})\b",
-            texto_normalizado(texto),
-        )
-    )
-    return bool(
-        verbos
-        and (sinais_agenda or tem_data_ou_hora)
-        and not eh_pedido_criacao_tarefa(texto)
-    )
-
-
-def eh_consulta_de_compromisso_especifico(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    return bool(
-        palavras & {"hora", "horario", "horas", "quando"}
-        and not eh_pedido_criacao_evento(texto)
-        and not eh_pedido_edicao(texto)
-    )
-
-
-def eh_pedido_replicacao(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    return bool(
-        palavras
-        & {
-            "copia",
-            "copiar",
-            "copie",
-            "duplica",
-            "duplicar",
-            "duplique",
-            "repete",
-            "repetir",
-            "repita",
-            "replica",
-            "replicar",
-            "replique",
-        }
-    )
 
 
 def classificar_intencao(texto: str) -> dict:
@@ -1406,203 +819,6 @@ def mensagem_erro_usuario(acao: str, erro: Exception) -> str:
     if isinstance(erro, ValueError):
         return f"❌ Não consegui {acao}: {erro}"
     return f"❌ Não consegui {acao} agora. Tente novamente."
-
-
-def eh_pedido_cancelamento(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    return bool(
-        palavras
-        & {
-            "apaga",
-            "apagar",
-            "apague",
-            "cancela",
-            "cancelar",
-            "cancele",
-            "desmarca",
-            "desmarcar",
-            "desmarque",
-            "exclua",
-            "excluir",
-            "exclui",
-            "remove",
-            "remover",
-            "remova",
-        }
-    )
-
-
-def eh_pedido_edicao(texto: str) -> bool:
-    lista_palavras = re.findall(r"[a-z0-9]+", texto_normalizado(texto))
-    if len(lista_palavras) > 1 and lista_palavras[:2] in (
-        ["troca", "de"],
-        ["troca", "da"],
-        ["troca", "do"],
-    ):
-        return False
-    palavras = set(lista_palavras)
-    return bool(
-        palavras
-        & {
-            "adia",
-            "adiar",
-            "adie",
-            "altera",
-            "alterar",
-            "altere",
-            "antecipa",
-            "antecipar",
-            "antecipe",
-            "edita",
-            "editar",
-            "edite",
-            "muda",
-            "mudar",
-            "mude",
-            "reagenda",
-            "reagendar",
-            "reagende",
-            "troca",
-            "trocar",
-            "troque",
-        }
-    )
-
-
-def eh_consulta_agenda(texto: str) -> bool:
-    palavras = re.findall(r"[a-z0-9]+", texto_normalizado(texto))
-    conjunto = set(palavras)
-
-    verbos_criacao = {
-        "adiciona",
-        "adicionar",
-        "adicione",
-        "agenda",
-        "agendar",
-        "agende",
-        "cria",
-        "criar",
-        "crie",
-        "marca",
-        "marcar",
-        "marque",
-    }
-    if conjunto & verbos_criacao:
-        # "agenda" também é substantivo; só indica criação quando vem com um
-        # complemento que não parece uma consulta.
-        verbos_sem_agenda = verbos_criacao - {"agenda"}
-        if conjunto & verbos_sem_agenda:
-            return False
-        if palavras[0] == "agenda" and len(palavras) > 2 and palavras[1] not in {
-            "da",
-            "de",
-            "do",
-            "hoje",
-            "hj",
-            "amanha",
-            "pra",
-            "para",
-        }:
-            return False
-
-    verbos_listagem = {
-        "consulta",
-        "consultar",
-        "liste",
-        "listar",
-        "mostra",
-        "mostrar",
-        "mostre",
-        "ver",
-        "veja",
-    }
-    termos_agenda = {"agenda", "agendas", "compromisso", "compromissos", "evento", "eventos"}
-    if conjunto & verbos_listagem and conjunto & termos_agenda:
-        return True
-
-    verbos_posse = {"existe", "existem", "ha", "tenho", "tem", "temos", "ter"}
-    interrogativos = {"oq", "oque", "q", "qual", "quais", "que"}
-    if conjunto & verbos_posse and conjunto & interrogativos:
-        return True
-
-    periodos = {"hoje", "hj", "amanha", "semana"}
-    plurais_agenda = {"agendas", "compromissos", "eventos"}
-    possessivos = {"meu", "meus", "minha", "nossa", "nossas", "nosso", "nossos"}
-    if "agenda" in conjunto and (conjunto & periodos or len(palavras) <= 3):
-        return True
-    if conjunto & plurais_agenda and conjunto & periodos:
-        return True
-    if conjunto & termos_agenda and conjunto & {"qual", "quais"}:
-        return True
-    if conjunto & termos_agenda and conjunto & possessivos:
-        return True
-    if "tem" in conjunto and conjunto & periodos:
-        return True
-
-    termos_genericos = {"algo", "alguma", "coisa"}
-    if conjunto & termos_genericos and conjunto & periodos:
-        return True
-
-    palavras_de_consulta_curta = {
-        "a",
-        "da",
-        "de",
-        "do",
-        "e",
-        "essa",
-        "esta",
-        "hoje",
-        "hj",
-        "amanha",
-        "o",
-        "para",
-        "pra",
-        "que",
-        "semana",
-        "tem",
-    }
-    if conjunto & periodos and conjunto <= palavras_de_consulta_curta:
-        return True
-
-    return False
-
-
-def consulta_eh_pessoal(texto: str) -> bool:
-    palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
-    if palavras & {"ambos", "nossa", "nossas", "nosso", "nossos", "temos", "todos"}:
-        return False
-    return bool(palavras & {"eu", "meu", "meus", "minha", "minhas", "tenho"})
-
-
-def intervalo_de_consulta(texto: str) -> Optional[tuple[datetime, datetime, str]]:
-    normalizado = texto_normalizado(texto)
-    if not eh_consulta_agenda(texto):
-        return None
-
-    hoje = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-    if "amanha" in normalizado:
-        inicio = hoje + timedelta(days=1)
-        return inicio, inicio + timedelta(days=1), "amanhã"
-    if "semana" in normalizado:
-        dias_ate_proxima_segunda = 7 - hoje.weekday()
-        return hoje, hoje + timedelta(days=dias_ate_proxima_segunda), "esta semana"
-    tem_data_especifica = bool(
-        re.search(r"\b\d{1,2}(?:/\d{1,2}(?:/\d{2,4})?)?\b", normalizado)
-        or set(re.findall(r"[a-z]+", normalizado))
-        & {
-            "segunda",
-            "terca",
-            "quarta",
-            "quinta",
-            "sexta",
-            "sabado",
-            "domingo",
-        }
-    )
-    if tem_data_especifica:
-        # Datas livres e intervalos são resolvidos pelo classificador estruturado.
-        return None
-    return hoje, hoje + timedelta(days=1), "hoje"
 
 
 def buscar_eventos(inicio: datetime, fim: datetime) -> list[dict]:
@@ -1743,6 +959,39 @@ def formatar_agenda(eventos: list[dict], rotulo: str) -> str:
     if len(eventos) > 30:
         linhas.append(f"\n… e mais {len(eventos) - 30} compromissos.")
     return "".join(linhas)
+
+
+def filtrar_eventos_por_periodo(eventos: list[dict], periodo: str) -> list[dict]:
+    limites = {
+        "madrugada": (0, 6),
+        "manhã": (6, 12),
+        "tarde": (12, 18),
+        "noite": (18, 24),
+    }
+    if periodo not in limites:
+        return eventos
+
+    hora_inicio, hora_fim = limites[periodo]
+    encontrados = []
+    for evento in eventos:
+        inicio = inicio_do_evento(evento)
+        fim = fim_do_evento(evento)
+        if not inicio or not fim:
+            # Um evento de dia inteiro também ocupa o período consultado.
+            encontrados.append(evento)
+            continue
+
+        dia = inicio.date()
+        ultimo_dia = (fim - timedelta(microseconds=1)).date()
+        while dia <= ultimo_dia:
+            inicio_dia = datetime.combine(dia, datetime.min.time(), tzinfo=TZ)
+            inicio_periodo = inicio_dia + timedelta(hours=hora_inicio)
+            fim_periodo = inicio_dia + timedelta(hours=hora_fim)
+            if inicio < fim_periodo and inicio_periodo < fim:
+                encontrados.append(evento)
+                break
+            dia += timedelta(days=1)
+    return encontrados
 
 
 def filtrar_eventos_por_termo(eventos: list[dict], termo: str) -> list[dict]:
@@ -1891,6 +1140,7 @@ async def responder_consulta(
     intervalo: tuple[datetime, datetime, str],
     role: Optional[str] = None,
     termo: Optional[str] = None,
+    periodo: Optional[str] = None,
 ) -> None:
     inicio, fim, rotulo = intervalo
     eventos = await asyncio.to_thread(buscar_eventos, inicio, fim)
@@ -1900,6 +1150,14 @@ async def responder_consulta(
             for evento in eventos
             if responsavel_do_evento(evento) in {role, "Ambos"}
         ]
+    if periodo:
+        eventos = filtrar_eventos_por_periodo(eventos, periodo)
+        rotulo = f"{rotulo} " + {
+            "madrugada": "de madrugada",
+            "manhã": "pela manhã",
+            "tarde": "à tarde",
+            "noite": "à noite",
+        }[periodo]
     if termo:
         eventos = filtrar_eventos_por_termo(eventos, termo)
         if not eventos:
@@ -2628,7 +1886,10 @@ async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     intervalo = intervalo_de_consulta(f"mostrar agenda {texto}")
     try:
         await responder_consulta(
-            update, intervalo, role if consulta_eh_pessoal(texto) else None
+            update,
+            intervalo,
+            role if consulta_eh_pessoal(texto) else None,
+            periodo=periodo_do_texto(texto),
         )
     except Exception as erro:
         LOGGER.exception("Falha ao consultar a agenda")
@@ -3361,7 +2622,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         if intervalo:
             await responder_consulta(
-                update, intervalo, role if consulta_eh_pessoal(texto) else None
+                update,
+                intervalo,
+                role if consulta_eh_pessoal(texto) else None,
+                periodo=periodo_do_texto(texto),
             )
             return
 
@@ -3383,6 +2647,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 intervalo_da_intencao(dados),
                 role if dados.get("pessoal") else None,
                 dados.get("termo"),
+                periodo_do_texto(texto),
             )
         elif intencao == "criar_tarefa":
             await iniciar_criacao_tarefa(update, context, role, texto)

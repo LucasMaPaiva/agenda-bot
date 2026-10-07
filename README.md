@@ -21,6 +21,18 @@ Esse bot segue as mesmas regras definidas lá:
    conflitos antes de fornecer os fatos ao modelo
 5. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
 
+## Estrutura do código
+
+- `bot.py`: orquestra os fluxos e handlers do Telegram.
+- `agenda_bot/settings.py`: carrega a configuração do ambiente.
+- `agenda_bot/schemas.py`: define os contratos JSON usados pelos modelos.
+- `agenda_bot/intent_rules.py`: reconhece intenções simples sem chamar IA.
+- `agenda_bot/storage.py`: concentra a persistência SQLite.
+- `agenda_bot/google_tasks.py`: encapsula a integração com o Google Tarefas.
+
+As funções públicas que já existiam em `bot.py` foram mantidas como fachadas para não
+quebrar os testes, comandos e scripts atuais.
+
 ## Recursos de segurança e planejamento
 
 - Criação, replicação e edição verificam sobreposições antes da confirmação.
@@ -46,6 +58,9 @@ Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
 Consultas com "eu", "meu" ou "minha" mostram somente os eventos do usuário e os
 eventos de ambos. Consultas com "temos", "nossa" ou "todos" mostram a agenda conjunta.
+Também é possível limitar pelo período: "o que tenho à noite?", "minha agenda de
+manhã" ou "o que temos amanhã à tarde?". Os períodos são madrugada (00h–06h),
+manhã (06h–12h), tarde (12h–18h) e noite (18h–00h).
 
 Pedidos como "cancelar academia de amanhã" ou `/cancelar academia amanhã` buscam
 os eventos correspondentes. Se houver mais de um, o bot pede para escolher e sempre

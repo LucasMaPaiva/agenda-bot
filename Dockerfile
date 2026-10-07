@@ -17,6 +17,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=bot:bot bot.py ./
+COPY --chown=bot:bot agenda_bot/ ./agenda_bot/
 RUN mkdir -p /app/data && chown bot:bot /app/data
 
 USER bot

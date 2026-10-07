@@ -65,6 +65,63 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertFalse(bot.consulta_eh_pessoal("o que temos hoje"))
         self.assertFalse(bot.consulta_eh_pessoal("agenda de todos"))
 
+    def test_consulta_reconhece_periodo_do_dia(self):
+        self.assertEqual(bot.periodo_do_texto("o que tenho à noite?"), "noite")
+        self.assertEqual(bot.periodo_do_texto("minha agenda de manhã"), "manhã")
+        self.assertEqual(bot.periodo_do_texto("compromissos da tarde"), "tarde")
+        self.assertEqual(bot.periodo_do_texto("e de madrugada?"), "madrugada")
+        self.assertIsNone(bot.periodo_do_texto("o que tenho hoje?"))
+
+    def test_resposta_de_consulta_mostra_somente_o_periodo_pedido(self):
+        data_consulta = date(2026, 10, 8)
+
+        def evento(titulo, inicio, fim):
+            return {
+                "summary": titulo,
+                "description": "Responsável: Matheus",
+                "start": {
+                    "dateTime": datetime.combine(
+                        data_consulta, datetime.strptime(inicio, "%H:%M").time(), bot.TZ
+                    ).isoformat()
+                },
+                "end": {
+                    "dateTime": datetime.combine(
+                        data_consulta, datetime.strptime(fim, "%H:%M").time(), bot.TZ
+                    ).isoformat()
+                },
+            }
+
+        eventos = [
+            evento("Café", "08:00", "08:30"),
+            evento("Trabalho", "14:00", "17:00"),
+            evento("Academia", "19:00", "20:00"),
+        ]
+
+        async def imediato(funcao, *args, **kwargs):
+            return funcao(*args, **kwargs)
+
+        async def executar():
+            mensagem = MensagemFake()
+            update = SimpleNamespace(message=mensagem)
+            inicio = datetime.combine(data_consulta, datetime.min.time(), bot.TZ)
+            with (
+                patch.object(bot.asyncio, "to_thread", side_effect=imediato),
+                patch.object(bot, "buscar_eventos", return_value=eventos),
+            ):
+                await bot.responder_consulta(
+                    update,
+                    (inicio, inicio + timedelta(days=1), "hoje"),
+                    "Matheus",
+                    periodo="noite",
+                )
+            return mensagem.respostas[0][0]
+
+        resposta = asyncio.run(executar())
+        self.assertIn("hoje à noite", resposta)
+        self.assertIn("Academia", resposta)
+        self.assertNotIn("Café", resposta)
+        self.assertNotIn("Trabalho", resposta)
+
     def test_intervalo_e_recorrencias(self):
         faixa = {**self.evento_base(), "data": "2026-10-10", "data_fim": "2026-10-18"}
         with patch.object(bot, "gerar_resposta_gemini", return_value=self.resposta(faixa)):
@@ -231,13 +288,18 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(novo["responsavel"], "Letícia")
 
     def test_horarios_livres_respeitam_eventos_buffer_e_duracao(self):
+        data_consulta = datetime.now(bot.TZ).date() + timedelta(days=1)
         eventos = []
         for titulo, inicio, fim in (
             ("Trabalho", "09:00", "10:00"),
             ("Almoço", "12:00", "13:00"),
         ):
-            comeco = datetime.fromisoformat(f"2026-10-07T{inicio}:00-04:00")
-            termino = datetime.fromisoformat(f"2026-10-07T{fim}:00-04:00")
+            comeco = datetime.fromisoformat(
+                f"{data_consulta.isoformat()}T{inicio}:00-04:00"
+            )
+            termino = datetime.fromisoformat(
+                f"{data_consulta.isoformat()}T{fim}:00-04:00"
+            )
             eventos.append(
                 {
                     "summary": titulo,
@@ -260,9 +322,7 @@ class AgendaLogicTest(unittest.TestCase):
                 side_effect=lambda role, chave, padrao: configuracoes.get(chave, padrao),
             ),
         ):
-            livres = bot.calcular_horarios_livres(
-                "Matheus", date(2026, 10, 7), 60
-            )
+            livres = bot.calcular_horarios_livres("Matheus", data_consulta, 60)
 
         self.assertEqual(
             [(inicio.strftime("%H:%M"), fim.strftime("%H:%M")) for inicio, fim in livres],
