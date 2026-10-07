@@ -105,6 +105,27 @@ def pedido_horarios_livres(texto: str) -> Optional[tuple[date, int]]:
     return data_consulta, duracao
 
 
+def pedido_planejamento_diario(texto: str) -> Optional[date]:
+    normalizado = texto_normalizado(texto)
+    sinais = (
+        "organiza meu dia",
+        "organize meu dia",
+        "planeja meu dia",
+        "planeje meu dia",
+        "planejamento do dia",
+        "monta meu dia",
+        "monte meu dia",
+    )
+    if not any(sinal in normalizado for sinal in sinais):
+        return None
+    match = re.search(
+        r"\b(hoje|hj|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|"
+        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
+        normalizado,
+    )
+    return resolver_data_curta(match.group(1)) if match else datetime.now(TZ).date()
+
+
 def eh_pedido_criacao_tarefa(texto: str) -> bool:
     palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
     return bool(

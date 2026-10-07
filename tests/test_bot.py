@@ -335,7 +335,7 @@ class AgendaLogicTest(unittest.TestCase):
         original = {
             "id": "abc",
             "summary": "Academia",
-            "description": "Responsável: Ambos",
+            "description": "Responsável: Ambos\nTarefa Google: tarefa-1",
             "start": {"dateTime": "2026-10-07T18:00:00-04:00"},
             "end": {"dateTime": "2026-10-07T19:15:00-04:00"},
         }
@@ -350,6 +350,7 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(novo["inicio"].strftime("%H:%M"), "18:30")
         self.assertEqual(novo["fim"].strftime("%H:%M"), "19:45")
         self.assertEqual(novo["responsavel"], "Letícia")
+        self.assertEqual(novo["task_id"], "tarefa-1")
 
     def test_horarios_livres_respeitam_eventos_buffer_e_duracao(self):
         data_consulta = datetime.now(bot.TZ).date() + timedelta(days=1)
@@ -399,6 +400,118 @@ class AgendaLogicTest(unittest.TestCase):
         )
         self.assertEqual(data_consulta, datetime.now(bot.TZ).date() + timedelta(days=1))
         self.assertEqual(duracao, 90)
+
+    def test_pedido_informal_de_planejamento(self):
+        amanha = datetime.now(bot.TZ).date() + timedelta(days=1)
+        self.assertEqual(
+            bot.pedido_planejamento_diario("organiza meu dia amanhã"), amanha
+        )
+        self.assertEqual(
+            bot.pedido_planejamento_diario("planeje meu dia"),
+            datetime.now(bot.TZ).date(),
+        )
+        self.assertIsNone(bot.pedido_planejamento_diario("o que tenho amanhã?"))
+
+    def test_planejamento_prioriza_pendencias_e_nao_duplica_tarefa(self):
+        data_consulta = datetime.now(bot.TZ).date() + timedelta(days=1)
+        inicio_evento = datetime.combine(
+            data_consulta, datetime.strptime("09:00", "%H:%M").time(), bot.TZ
+        )
+        eventos = [
+            {
+                "summary": "Reunião",
+                "description": "Responsável: Matheus",
+                "start": {"dateTime": inicio_evento.isoformat()},
+                "end": {
+                    "dateTime": (inicio_evento + timedelta(hours=1)).isoformat()
+                },
+            },
+            {
+                "summary": "Foco: tarefa já planejada",
+                "description": "Responsável: Matheus\nTarefa Google: repetida",
+                "start": {
+                    "dateTime": (inicio_evento + timedelta(hours=2)).isoformat()
+                },
+                "end": {
+                    "dateTime": (
+                        inicio_evento + timedelta(hours=2, minutes=30)
+                    ).isoformat()
+                },
+            },
+        ]
+        tarefas = [
+            {
+                "id": "atrasada",
+                "title": "Pagar conta",
+                "due": f"{(data_consulta - timedelta(days=1)).isoformat()}T00:00:00.000Z",
+            },
+            {"id": "sem-prazo", "title": "Comprar filtro"},
+            {"id": "repetida", "title": "tarefa já planejada"},
+            {
+                "id": "futura",
+                "title": "Resolver depois",
+                "due": f"{(data_consulta + timedelta(days=1)).isoformat()}T00:00:00.000Z",
+            },
+        ]
+        configuracoes = {
+            "inicio_dia": "08:00",
+            "fim_dia": "13:00",
+            "buffer_minutos": "15",
+            "duracao_tarefa": "30",
+        }
+        with (
+            patch.object(bot, "buscar_eventos", return_value=eventos) as calendario,
+            patch.object(bot, "listar_tarefas_google", return_value=tarefas),
+            patch.object(
+                bot,
+                "obter_configuracao",
+                side_effect=lambda role, chave, padrao: configuracoes.get(chave, padrao),
+            ),
+            patch.object(bot, "gerar_resposta_ollama") as ollama,
+            patch.object(bot, "gerar_resposta_gemini") as gemini,
+        ):
+            plano = bot.montar_planejamento_diario("Matheus", data_consulta)
+
+        self.assertEqual(calendario.call_count, 1)
+        self.assertEqual(
+            [bloco["task_id"] for bloco in plano["blocos"]],
+            ["atrasada", "sem-prazo"],
+        )
+        self.assertEqual(plano["blocos"][0]["inicio"].strftime("%H:%M"), "08:00")
+        self.assertNotIn("Resolver depois", plano["texto"])
+        self.assertNotIn(
+            "Foco: tarefa já planejada",
+            [bloco["titulo"] for bloco in plano["blocos"]],
+        )
+        ollama.assert_not_called()
+        gemini.assert_not_called()
+
+    def test_resumo_proativo_e_deterministico(self):
+        agora = datetime(2026, 10, 7, 20, 30, tzinfo=bot.TZ)
+        amanha = agora.date() + timedelta(days=1)
+        inicio = datetime.combine(
+            amanha, datetime.strptime("19:00", "%H:%M").time(), bot.TZ
+        )
+        eventos = [
+            {
+                "summary": "Academia",
+                "description": "Responsável: Matheus",
+                "start": {"dateTime": inicio.isoformat()},
+                "end": {"dateTime": (inicio + timedelta(hours=1)).isoformat()},
+            }
+        ]
+        with (
+            patch.object(bot, "listar_tarefas_google", return_value=[]),
+            patch.object(bot, "gerar_resposta_ollama") as ollama,
+            patch.object(bot, "gerar_resposta_gemini") as gemini,
+        ):
+            resumo = bot.montar_resumo_proativo(
+                "Matheus", "noite", agora, eventos
+            )
+        self.assertIn("Prévia de amanhã", resumo)
+        self.assertIn("19:00 — Academia", resumo)
+        ollama.assert_not_called()
+        gemini.assert_not_called()
 
     def test_conflito_entre_novo_evento_e_agenda_existente(self):
         inicio = datetime(2026, 10, 7, 18, 0, tzinfo=bot.TZ)
@@ -491,6 +604,32 @@ class PersistenceTest(unittest.TestCase):
         self.assertEqual(bot.obter_historico_conversa("Matheus"), [])
         self.assertEqual(bot.obter_estado_conversa("Matheus"), {})
 
+    def test_resumos_da_manha_e_noite_sao_registrados_separadamente(self):
+        dia = date(2026, 10, 7)
+        self.assertFalse(bot.resumo_proativo_enviado("Matheus", dia, "manha"))
+        bot.marcar_resumo_proativo_enviado("Matheus", dia, "manha")
+        self.assertTrue(bot.resumo_proativo_enviado("Matheus", dia, "manha"))
+        self.assertFalse(bot.resumo_proativo_enviado("Matheus", dia, "noite"))
+
+    def test_job_de_resumo_nao_consulta_google_fora_do_horario(self):
+        with bot.conectar_banco() as conexao:
+            conexao.execute(
+                """
+                INSERT INTO usuarios (
+                    role, telegram_user_id, chat_id, registered_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("Matheus", 1, 2, datetime.now(bot.TZ).isoformat()),
+            )
+        contexto = SimpleNamespace(bot=MagicMock())
+        with (
+            patch.object(bot, "buscar_eventos") as calendario,
+            patch.object(bot, "listar_tarefas_google") as tarefas,
+        ):
+            asyncio.run(bot.verificar_resumos_diarios(contexto))
+        calendario.assert_not_called()
+        tarefas.assert_not_called()
+
 
 class MensagemFake:
     def __init__(self):
@@ -553,6 +692,52 @@ class ConfirmationFlowTest(unittest.TestCase):
                     SimpleNamespace(callback_query=query), contexto
                 )
                 self.assertEqual(len(criados), 1)
+
+        asyncio.run(executar())
+
+    def test_planejamento_so_cria_blocos_depois_da_confirmacao(self):
+        async def imediato(funcao, *args, **kwargs):
+            return funcao(*args, **kwargs)
+
+        inicio = datetime(2026, 10, 8, 8, 0, tzinfo=bot.TZ)
+        bloco = {
+            "titulo": "Foco: Pagar conta",
+            "responsavel": "Matheus",
+            "inicio": inicio,
+            "fim": inicio + timedelta(minutes=30),
+            "recorrencia": "nenhuma",
+            "task_id": "tarefa-1",
+        }
+        criados = []
+        contexto = SimpleNamespace(user_data={})
+        mensagem = MensagemFake()
+
+        async def executar():
+            with (
+                patch.object(bot.asyncio, "to_thread", side_effect=imediato),
+                patch.object(
+                    bot,
+                    "montar_planejamento_diario",
+                    return_value={"texto": "Plano", "blocos": [bloco]},
+                ),
+                patch.object(bot, "role_do_usuario", return_value="Matheus"),
+                patch.object(
+                    bot,
+                    "criar_eventos_calendar_com_ids",
+                    side_effect=lambda eventos: criados.extend(eventos) or ["evento-1"],
+                ),
+                patch.object(bot, "registrar_acao"),
+            ):
+                await bot.enviar_planejamento_diario(
+                    SimpleNamespace(message=mensagem), contexto, "Matheus", inicio.date()
+                )
+                self.assertFalse(criados)
+                token = next(iter(contexto.user_data["criacoes_pendentes"]))
+                query = QueryFake(f"gc:{token}")
+                await bot.callback_criacao(
+                    SimpleNamespace(callback_query=query), contexto
+                )
+                self.assertEqual(criados, [bloco])
 
         asyncio.run(executar())
 

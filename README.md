@@ -27,6 +27,7 @@ Esse bot segue as mesmas regras definidas lá:
 - `agenda_bot/settings.py`: carrega a configuração do ambiente.
 - `agenda_bot/schemas.py`: define os contratos JSON usados pelos modelos.
 - `agenda_bot/intent_rules.py`: reconhece intenções simples sem chamar IA.
+- `agenda_bot/planning.py`: prioriza tarefas e distribui blocos livres sem chamar IA.
 - `agenda_bot/storage.py`: concentra a persistência SQLite.
 - `agenda_bot/google_tasks.py`: encapsula a integração com o Google Tarefas.
 
@@ -39,10 +40,14 @@ quebrar os testes, comandos e scripts atuais.
 - `/livres amanhã 60` sugere janelas livres considerando a agenda pessoal, um
   buffer configurável e o horário útil do dia. Também entende frases como
   "onde cabe uma reunião de 1h amanhã?".
+- `/planejar amanhã` combina compromissos e tarefas vencidas, do dia ou sem prazo,
+  sugere blocos nos horários livres e só os adiciona à agenda após confirmação.
+  Também entende frases como "organiza meu dia amanhã".
 - Preferências permanentes ajudam a conversa local a respeitar prioridades como
   "academia é prioridade de segunda a quinta".
 - Rotinas podem ser salvas a partir de um dia existente e aplicadas em outra data.
-- Um resumo diário opcional envia a agenda da pessoa no horário escolhido.
+- Resumos proativos opcionais enviam o plano da manhã e uma prévia da noite nos
+  horários escolhidos, sem mensagem quando não há nada relevante.
 - Lembretes têm botões para marcar como ciente, abrir o evento ou adiar por 10 minutos.
 - A última criação, edição ou exclusão de evento pode ser revertida com `/desfazer`
   durante 24 horas.
@@ -54,6 +59,10 @@ passando pelos fluxos de confirmação. As duas últimas trocas e o contexto da 
 salvos no SQLite, separados por usuário, e continuam disponíveis após reinicializações.
 O histórico expira após sete dias e referências como "esse compromisso" expiram após 24
 horas. Tudo pode ser apagado com `/limpar_conversa`.
+
+O planejamento e os resumos proativos são determinísticos: consultam Google Agenda e
+Google Tarefas, mas não chamam Gemini nem Ollama. Assim, ativar essas automações não
+mantém o modelo local carregado nem aumenta a pressão de memória na VPS.
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.
@@ -194,9 +203,11 @@ Use `/versao` para confirmar qual versão está rodando.
 
 ```text
 /livres amanhã 60
+/planejar amanhã
 /preferencia Academia é prioridade de segunda a quinta
 /preferencia buffer 15
 /preferencia horario 06:00 22:00
+/preferencia tarefa 30
 /preferencias
 /remover_preferencia 1
 
@@ -204,7 +215,7 @@ Use `/versao` para confirmar qual versão está rodando.
 /rotinas
 /aplicar_rotina quinta normal | 15/10
 
-/resumo_diario 06:00
+/resumo_diario 06:00 20:30
 /resumo_diario desligar
 /desfazer
 /status
@@ -213,6 +224,9 @@ Use `/versao` para confirmar qual versão está rodando.
 `/salvar_rotina` copia para um modelo os compromissos pessoais e de ambos que já
 existem no dia indicado. `/aplicar_rotina` mostra uma prévia, aponta conflitos e só
 cria os eventos depois da confirmação.
+
+Em `/resumo_diario 06:00 20:30`, o primeiro horário é o resumo do dia e o segundo é
+a prévia do dia seguinte. Informar somente um horário mantém apenas o resumo da manhã.
 
 ### 8. Rodar com Docker
 

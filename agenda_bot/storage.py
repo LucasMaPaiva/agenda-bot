@@ -7,7 +7,7 @@ o formato do banco.
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -83,6 +83,14 @@ class AgendaRepository:
                     data TEXT NOT NULL,
                     sent_at TEXT NOT NULL,
                     PRIMARY KEY (role, data)
+                );
+
+                CREATE TABLE IF NOT EXISTS resumos_proativos (
+                    role TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    tipo TEXT NOT NULL,
+                    sent_at TEXT NOT NULL,
+                    PRIMARY KEY (role, data, tipo)
                 );
 
                 CREATE TABLE IF NOT EXISTS conversas (
@@ -219,6 +227,41 @@ class AgendaRepository:
     def clear_conversation(self, role: str) -> None:
         with self.connect() as connection:
             connection.execute("DELETE FROM conversas WHERE role = ?", (role,))
+
+    def proactive_summary_sent(self, role: str, day: date, summary_type: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM resumos_proativos
+                WHERE role = ? AND data = ? AND tipo = ?
+                """,
+                (role, day.isoformat(), summary_type),
+            ).fetchone()
+        return row is not None
+
+    def mark_proactive_summary_sent(
+        self, role: str, day: date, summary_type: str
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO resumos_proativos (role, data, tipo, sent_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    role,
+                    day.isoformat(),
+                    summary_type,
+                    datetime.now(self.timezone).isoformat(),
+                ),
+            )
+
+    def clean_old_proactive_summaries(self, retention_days: int = 90) -> None:
+        limit = (datetime.now(self.timezone).date() - timedelta(days=retention_days))
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM resumos_proativos WHERE data < ?", (limit.isoformat(),)
+            )
 
     def list_preferences(self, role: str) -> list[sqlite3.Row]:
         with self.connect() as connection:

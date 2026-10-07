@@ -46,9 +46,17 @@ from agenda_bot.intent_rules import (
     eh_pedido_replicacao,
     intervalo_de_consulta,
     pedido_horarios_livres,
+    pedido_planejamento_diario,
     periodo_do_texto,
     resolver_data_curta,
     texto_normalizado,
+)
+from agenda_bot.planning import (
+    TASK_MARKER,
+    allocate_task_blocks,
+    planned_task_ids,
+    prioritize_tasks,
+    task_due_date,
 )
 from agenda_bot.storage import AgendaRepository
 from agenda_bot.settings import (
@@ -213,6 +221,18 @@ def salvar_estado_conversa(role: str, estado: dict) -> None:
 
 def apagar_conversa(role: str) -> None:
     _repository().clear_conversation(role)
+
+
+def resumo_proativo_enviado(role: str, dia: date, tipo: str) -> bool:
+    return _repository().proactive_summary_sent(role, dia, tipo)
+
+
+def marcar_resumo_proativo_enviado(role: str, dia: date, tipo: str) -> None:
+    _repository().mark_proactive_summary_sent(role, dia, tipo)
+
+
+def limpar_resumos_proativos_antigos() -> None:
+    _repository().clean_old_proactive_summaries()
 
 
 def gerar_resposta_ollama(
@@ -585,19 +605,30 @@ def preparar_evento_editado(evento: dict, alteracoes: dict) -> dict:
         novo_fim = novo_inicio + (fim_atual - inicio_atual)
 
     responsavel = alteracoes.get("novo_responsavel") or responsavel_do_evento(evento)
-    return {
+    resultado = {
         "id": evento["id"],
         "titulo": alteracoes.get("novo_titulo") or evento.get("summary", "Sem título"),
         "responsavel": responsavel,
         "inicio": novo_inicio,
         "fim": novo_fim,
     }
+    ids_tarefa = planned_task_ids([evento])
+    if ids_tarefa:
+        resultado["task_id"] = next(iter(ids_tarefa))
+    return resultado
+
+
+def descricao_evento_planejado(evento: dict) -> str:
+    linhas = [f"Responsável: {evento['responsavel']}"]
+    if evento.get("task_id"):
+        linhas.append(f"{TASK_MARKER} {evento['task_id']}")
+    return "\n".join(linhas)
 
 
 def atualizar_evento_calendar(evento: dict) -> None:
     body = {
         "summary": evento["titulo"],
-        "description": f"Responsável: {evento['responsavel']}",
+        "description": descricao_evento_planejado(evento),
         "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
         "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
@@ -728,7 +759,7 @@ def criar_evento_calendar(evento: dict) -> bool:
 
     body = {
         "summary": evento["titulo"],
-        "description": f"Responsável: {evento['responsavel']}",
+        "description": descricao_evento_planejado(evento),
         "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
         "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
@@ -746,7 +777,7 @@ def criar_eventos_calendar_com_ids(eventos: list[dict]) -> list[str]:
             continue
         body = {
             "summary": evento["titulo"],
-            "description": f"Responsável: {evento['responsavel']}",
+            "description": descricao_evento_planejado(evento),
             "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
             "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
@@ -1391,7 +1422,10 @@ def contexto_agenda_para_conversa(role: str) -> str:
 
 
 def calcular_horarios_livres(
-    role: str, data_consulta: date, duracao_minutos: int
+    role: str,
+    data_consulta: date,
+    duracao_minutos: int,
+    eventos_existentes: Optional[list[dict]] = None,
 ) -> list[tuple[datetime, datetime]]:
     if duracao_minutos < 15 or duracao_minutos > 480:
         raise ValueError("a duração deve ficar entre 15 minutos e 8 horas")
@@ -1421,7 +1455,11 @@ def calcular_horarios_livres(
         return []
     eventos = [
         evento
-        for evento in buscar_eventos(inicio_janela, fim_janela)
+        for evento in (
+            eventos_existentes
+            if eventos_existentes is not None
+            else buscar_eventos(inicio_janela, fim_janela)
+        )
         if responsavel_do_evento(evento) in {role, "Ambos"}
     ]
     ocupados = []
@@ -1472,6 +1510,204 @@ def formatar_horarios_livres(
     for inicio, fim in horarios[:6]:
         linhas.append(f"\n• {inicio.strftime('%H:%M')}–{fim.strftime('%H:%M')}")
     return "".join(linhas)
+
+
+def conflitos_entre_eventos(eventos: list[dict]) -> list[str]:
+    com_horario = []
+    for evento in eventos:
+        inicio = inicio_do_evento(evento)
+        fim = fim_do_evento(evento)
+        if inicio and fim:
+            com_horario.append((inicio, fim, evento.get("summary", "Sem título")))
+    com_horario.sort(key=lambda item: item[0])
+    conflitos = []
+    for indice, (inicio, fim, titulo) in enumerate(com_horario):
+        for outro_inicio, outro_fim, outro_titulo in com_horario[indice + 1 :]:
+            if outro_inicio >= fim:
+                break
+            minutos = int(
+                (min(fim, outro_fim) - max(inicio, outro_inicio)).total_seconds()
+                // 60
+            )
+            if minutos > 0:
+                conflitos.append(
+                    f"{titulo} conflita com {outro_titulo} por {minutos} min"
+                )
+    return conflitos
+
+
+def rotulo_prazo_tarefa(tarefa: dict, data_consulta: date) -> str:
+    prazo = task_due_date(tarefa)
+    if not prazo:
+        return "sem prazo"
+    if prazo < data_consulta:
+        return f"atrasada desde {prazo.strftime('%d/%m')}"
+    if prazo == data_consulta:
+        return "vence nesse dia"
+    return f"vence em {prazo.strftime('%d/%m')}"
+
+
+def carregar_tarefas_planejamento(role: str) -> tuple[list[dict], Optional[str]]:
+    try:
+        return listar_tarefas_google(role), None
+    except Exception as erro:
+        LOGGER.warning("Google Tarefas indisponível no planejamento de %s: %s", role, erro)
+        return [], "Google Tarefas indisponível; o plano considera somente a agenda."
+
+
+def montar_planejamento_diario(role: str, data_consulta: date) -> dict:
+    inicio = datetime.combine(data_consulta, datetime.min.time(), tzinfo=TZ)
+    fim = inicio + timedelta(days=1)
+    todos_eventos = buscar_eventos(inicio, fim)
+    eventos = [
+        evento
+        for evento in todos_eventos
+        if responsavel_do_evento(evento) in {role, "Ambos"}
+    ]
+    tarefas, aviso_tarefas = carregar_tarefas_planejamento(role)
+    try:
+        duracao = int(obter_configuracao(role, "duracao_tarefa", "30"))
+    except ValueError:
+        duracao = 30
+    duracao = min(120, max(15, duracao))
+    prioritarias = prioritize_tasks(
+        tarefas,
+        data_consulta,
+        ignored_ids=planned_task_ids(eventos),
+        limit=5,
+    )
+    horarios = calcular_horarios_livres(
+        role, data_consulta, duracao, todos_eventos
+    )
+    blocos, nao_alocadas = allocate_task_blocks(
+        prioritarias, horarios, duracao, role
+    )
+    conflitos = conflitos_entre_eventos(eventos)
+
+    linhas = [f"🧭 Plano de {data_consulta.strftime('%d/%m/%Y')}"]
+    if eventos:
+        linhas.append("\n📅 Compromissos fixos:")
+        for evento in eventos[:12]:
+            inicio_evento = inicio_do_evento(evento)
+            fim_evento = fim_do_evento(evento)
+            horario = (
+                f"{inicio_evento.strftime('%H:%M')}–{fim_evento.strftime('%H:%M')}"
+                if inicio_evento and fim_evento
+                else "dia inteiro"
+            )
+            linhas.append(f"\n• {horario} — {evento.get('summary', 'Sem título')}")
+    else:
+        linhas.append("\n📅 Nenhum compromisso fixo.")
+
+    if blocos:
+        linhas.append(f"\n\n✅ Sugestão para tarefas ({duracao} min cada):")
+        for bloco in blocos:
+            linhas.append(
+                f"\n• {bloco['inicio'].strftime('%H:%M')}–"
+                f"{bloco['fim'].strftime('%H:%M')} — {bloco['titulo'][6:]}"
+            )
+    elif prioritarias:
+        linhas.append("\n\n⏱ Não encontrei espaço para as tarefas prioritárias.")
+    else:
+        linhas.append("\n\n✅ Nenhuma tarefa vencida ou sem prazo para encaixar.")
+
+    if nao_alocadas:
+        linhas.append("\n\n⚠️ Não couberam no dia:")
+        for tarefa in nao_alocadas:
+            linhas.append(
+                f"\n• {tarefa.get('title', 'Sem título')} "
+                f"({rotulo_prazo_tarefa(tarefa, data_consulta)})"
+            )
+    if conflitos:
+        linhas.append("\n\n⚠️ Conflitos existentes:")
+        linhas.extend(f"\n• {item}" for item in conflitos[:5])
+    if aviso_tarefas:
+        linhas.append(f"\n\nℹ️ {aviso_tarefas}")
+    if blocos:
+        linhas.append("\n\nNada será alterado sem sua confirmação.")
+    return {"texto": "".join(linhas), "blocos": blocos}
+
+
+def montar_resumo_proativo(
+    role: str,
+    tipo: str,
+    agora: datetime,
+    eventos_do_periodo: Optional[list[dict]] = None,
+) -> Optional[str]:
+    data_consulta = agora.date() if tipo == "manha" else agora.date() + timedelta(days=1)
+    inicio = datetime.combine(data_consulta, datetime.min.time(), tzinfo=TZ)
+    eventos_base = (
+        eventos_do_periodo
+        if eventos_do_periodo is not None
+        else buscar_eventos(inicio, inicio + timedelta(days=1))
+    )
+    eventos = [
+        evento
+        for evento in eventos_base
+        if responsavel_do_evento(evento) in {role, "Ambos"}
+    ]
+    tarefas, _ = carregar_tarefas_planejamento(role)
+    tarefas = prioritize_tasks(
+        tarefas,
+        data_consulta,
+        ignored_ids=planned_task_ids(eventos),
+        limit=5,
+    )
+    conflitos = conflitos_entre_eventos(eventos)
+    if not eventos and not tarefas and not conflitos:
+        return None
+
+    titulo = "☀️ Seu dia de hoje" if tipo == "manha" else "🌙 Prévia de amanhã"
+    linhas = [titulo]
+    if eventos:
+        linhas.append("\n\n📅 Agenda:")
+        for evento in eventos[:10]:
+            inicio_evento = inicio_do_evento(evento)
+            horario = inicio_evento.strftime("%H:%M") if inicio_evento else "dia inteiro"
+            linhas.append(f"\n• {horario} — {evento.get('summary', 'Sem título')}")
+    if tarefas:
+        linhas.append("\n\n📋 Pendências prioritárias:")
+        for tarefa in tarefas:
+            linhas.append(
+                f"\n• {tarefa.get('title', 'Sem título')} "
+                f"({rotulo_prazo_tarefa(tarefa, data_consulta)})"
+            )
+    if conflitos:
+        linhas.append("\n\n⚠️ Atenção:")
+        linhas.extend(f"\n• {item}" for item in conflitos[:5])
+    if tarefas:
+        termo = "hoje" if tipo == "manha" else "amanhã"
+        linhas.append(f"\n\nUse /planejar {termo} para montar os blocos do dia.")
+    return "".join(linhas)
+
+
+async def enviar_planejamento_diario(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    role: str,
+    data_consulta: date,
+) -> None:
+    plano = await asyncio.to_thread(montar_planejamento_diario, role, data_consulta)
+    blocos = plano["blocos"]
+    if not blocos:
+        await update.message.reply_text(plano["texto"])
+        return
+    token = salvar_acao_pendente(
+        context, "criacoes_pendentes", {"eventos": blocos}
+    )
+    await update.message.reply_text(
+        plano["texto"],
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Adicionar blocos à agenda", callback_data=f"gc:{token}"
+                    )
+                ],
+                [InlineKeyboardButton("Só visualizar", callback_data=f"ga:{token}")],
+            ]
+        ),
+    )
 
 
 def salvar_acao_pendente(
@@ -2013,10 +2249,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             '"Replica academia de terça para quarta"\n'
             '"Cancelar academia de amanhã"\n'
             '"Onde cabe uma reunião de 1 hora amanhã?"\n\n'
+            '"Organiza meu dia amanhã"\n\n'
             "Principais comandos:\n"
             "/agenda · /editar · /replicar · /cancelar\n"
             "/tarefa · /tarefas · /concluir · /editar_tarefa · /excluir_tarefa\n"
-            "/livres · /preferencias · /rotinas · /resumo_diario\n"
+            "/livres · /planejar · /preferencias · /rotinas · /resumo_diario\n"
             "/desfazer · /status · /versao"
         )
     else:
@@ -2387,6 +2624,22 @@ async def preferencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"✅ Janela do dia salva: {partes[1]}–{partes[2]}."
         )
         return
+    if (
+        partes[0].casefold() in {"duracao_tarefa", "tarefa"}
+        and len(partes) == 2
+        and partes[1].isdigit()
+    ):
+        minutos = int(partes[1])
+        if minutos < 15 or minutos > 120:
+            await update.message.reply_text(
+                "A duração padrão deve ficar entre 15 e 120 minutos."
+            )
+            return
+        salvar_configuracao(role, "duracao_tarefa", str(minutos))
+        await update.message.reply_text(
+            f"✅ Duração padrão das tarefas: {minutos} minutos."
+        )
+        return
     if len(listar_preferencias(role)) >= 20:
         await update.message.reply_text(
             "Você já tem 20 preferências. Remova uma com /remover_preferencia."
@@ -2411,6 +2664,8 @@ async def preferencias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"\n\nHorário: {obter_configuracao(role, 'inicio_dia', '06:00')}–"
         f"{obter_configuracao(role, 'fim_dia', '22:00')}"
         f"\nBuffer: {obter_configuracao(role, 'buffer_minutos', '15')} min"
+        f"\nDuração das tarefas: "
+        f"{obter_configuracao(role, 'duracao_tarefa', '30')} min"
     )
     await update.message.reply_text("".join(linhas))
 
@@ -2450,6 +2705,30 @@ async def livres(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as erro:
         await update.message.reply_text(mensagem_erro_usuario("calcular horários livres", erro))
+
+
+async def planejar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if len(context.args) > 1:
+        await update.message.reply_text(
+            "Use: /planejar hoje, /planejar amanhã ou /planejar DD/MM."
+        )
+        return
+    try:
+        data_consulta = (
+            resolver_data_curta(context.args[0])
+            if context.args
+            else datetime.now(TZ).date()
+        )
+        await enviar_planejamento_diario(update, context, role, data_consulta)
+    except Exception as erro:
+        LOGGER.exception("Falha ao montar planejamento diário")
+        await update.message.reply_text(
+            mensagem_erro_usuario("montar o planejamento", erro)
+        )
 
 
 async def salvar_rotina_cmd(
@@ -2556,24 +2835,44 @@ async def resumo_diario_cmd(
     if not role:
         await update.message.reply_text("Telegram não autorizado. Envie /start.")
         return
-    if len(context.args) != 1:
-        atual = obter_configuracao(role, "resumo_diario", "desligado")
+    if not context.args:
+        manha = obter_configuracao(role, "resumo_diario", "desligado")
+        noite = obter_configuracao(role, "resumo_noturno", "desligado")
         await update.message.reply_text(
-            f"Resumo diário: {atual}. Use /resumo_diario HH:MM ou desligar."
+            f"Resumo da manhã: {manha}\nResumo da noite: {noite}\n\n"
+            "Use /resumo_diario 06:00 20:30 ou /resumo_diario desligar."
         )
         return
-    valor = context.args[0].casefold()
-    if valor in {"desligar", "desligado", "off"}:
+    if len(context.args) == 1 and context.args[0].casefold() in {
+        "desligar",
+        "desligado",
+        "off",
+    }:
         salvar_configuracao(role, "resumo_diario", "desligado")
-        await update.message.reply_text("✅ Resumo diário desligado.")
+        salvar_configuracao(role, "resumo_noturno", "desligado")
+        await update.message.reply_text("✅ Resumos proativos desligados.")
+        return
+    if len(context.args) not in {1, 2}:
+        await update.message.reply_text(
+            "Use /resumo_diario 06:00 20:30 ou /resumo_diario desligar."
+        )
         return
     try:
-        datetime.strptime(valor, "%H:%M")
+        for valor in context.args:
+            datetime.strptime(valor, "%H:%M")
     except ValueError:
-        await update.message.reply_text("Use: /resumo_diario 06:00 ou /resumo_diario desligar")
+        await update.message.reply_text(
+            "Use horários HH:MM, por exemplo: /resumo_diario 06:00 20:30."
+        )
         return
-    salvar_configuracao(role, "resumo_diario", valor)
-    await update.message.reply_text(f"✅ Resumo diário programado para {valor}.")
+    manha = context.args[0]
+    noite = context.args[1] if len(context.args) == 2 else "desligado"
+    salvar_configuracao(role, "resumo_diario", manha)
+    salvar_configuracao(role, "resumo_noturno", noite)
+    mensagem = f"✅ Resumo da manhã programado para {manha}."
+    if noite != "desligado":
+        mensagem += f"\n✅ Prévia da noite programada para {noite}."
+    await update.message.reply_text(mensagem)
 
 
 async def desfazer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2775,6 +3074,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "/excluir_tarefa 2 ou /editar_tarefa 2 Novo título."
                 )
                 return
+
+        data_planejamento = pedido_planejamento_diario(texto)
+        if data_planejamento:
+            await enviar_planejamento_diario(
+                update, context, role, data_planejamento
+            )
+            return
 
         pedido_livre = pedido_horarios_livres(texto)
         if pedido_livre:
@@ -3003,35 +3309,50 @@ async def verificar_resumos_diarios(context: ContextTypes.DEFAULT_TYPE) -> None:
             usuarios = conexao.execute(
                 "SELECT role, chat_id FROM usuarios"
             ).fetchall()
-        inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
-        fim = inicio + timedelta(days=1)
-        eventos_do_dia = buscar_eventos(inicio, fim)
+        agendados = []
         for usuario in usuarios:
             role = usuario["role"]
-            horario = obter_configuracao(role, "resumo_diario", "desligado")
-            if horario == "desligado" or horario != agora.strftime("%H:%M"):
-                continue
-            with conectar_banco() as conexao:
-                enviado = conexao.execute(
-                    "SELECT 1 FROM resumos_enviados WHERE role = ? AND data = ?",
-                    (role, agora.date().isoformat()),
-                ).fetchone()
-            if enviado:
-                continue
-            eventos = [
-                evento for evento in eventos_do_dia
-                if responsavel_do_evento(evento) in {role, "Ambos"}
-            ]
-            mensagem = "☀️ Bom dia!\n\n" + formatar_agenda(eventos, "hoje")
-            await context.bot.send_message(chat_id=usuario["chat_id"], text=mensagem)
-            with conectar_banco() as conexao:
-                conexao.execute(
-                    "INSERT OR IGNORE INTO resumos_enviados (role, data, sent_at) VALUES (?, ?, ?)",
-                    (role, agora.date().isoformat(), agora.isoformat()),
+            for tipo, chave in (
+                ("manha", "resumo_diario"),
+                ("noite", "resumo_noturno"),
+            ):
+                horario = obter_configuracao(role, chave, "desligado")
+                if horario != agora.strftime("%H:%M"):
+                    continue
+                if resumo_proativo_enviado(role, agora.date(), tipo):
+                    continue
+                agendados.append((usuario, tipo))
+
+        eventos_por_data = {}
+        for usuario, tipo in agendados:
+            role = usuario["role"]
+            data_consulta = (
+                agora.date() if tipo == "manha" else agora.date() + timedelta(days=1)
+            )
+            try:
+                if data_consulta not in eventos_por_data:
+                    inicio = datetime.combine(
+                        data_consulta, datetime.min.time(), tzinfo=TZ
+                    )
+                    eventos_por_data[data_consulta] = await asyncio.to_thread(
+                        buscar_eventos, inicio, inicio + timedelta(days=1)
+                    )
+                mensagem = await asyncio.to_thread(
+                    montar_resumo_proativo,
+                    role,
+                    tipo,
+                    agora,
+                    eventos_por_data[data_consulta],
                 )
-        limite = (agora.date() - timedelta(days=90)).isoformat()
-        with conectar_banco() as conexao:
-            conexao.execute("DELETE FROM resumos_enviados WHERE data < ?", (limite,))
+                if mensagem:
+                    await context.bot.send_message(
+                        chat_id=usuario["chat_id"], text=mensagem
+                    )
+                marcar_resumo_proativo_enviado(role, agora.date(), tipo)
+            except Exception:
+                LOGGER.exception("Falha no resumo %s de %s", tipo, role)
+        if agendados:
+            limpar_resumos_proativos_antigos()
     except Exception:
         LOGGER.exception("Falha ao enviar resumo diário")
 
@@ -3075,6 +3396,7 @@ def main() -> None:
     app.add_handler(CommandHandler("editar_tarefa", editar_tarefa_cmd))
     app.add_handler(CommandHandler("excluir_tarefa", excluir_tarefa_cmd))
     app.add_handler(CommandHandler("livres", livres))
+    app.add_handler(CommandHandler("planejar", planejar_cmd))
     app.add_handler(CommandHandler("preferencia", preferencia))
     app.add_handler(CommandHandler("preferencias", preferencias))
     app.add_handler(CommandHandler("remover_preferencia", remover_preferencia_cmd))
