@@ -147,8 +147,9 @@ cp .env.example .env
 # editar .env com tokens, calendário e códigos diferentes para Matheus e Letícia
 ```
 
-`DATABASE_PATH` guarda os cadastros e o histórico de lembretes enviados. Não apague
-esse arquivo enquanto o bot estiver em uso.
+`DATABASE_PATH` guarda os cadastros, os lembretes avulsos pendentes e o histórico de
+lembretes de eventos enviados. Não apague esse arquivo enquanto o bot estiver em uso:
+além dos usuários autorizados, isso removeria os lembretes ainda não enviados.
 
 ### 5. Google Tarefas — OAuth individual (opcional)
 
@@ -245,6 +246,14 @@ de localização preenchido usam o tempo de deslocamento. Consultas, exames, reu
 aulas, academia e compromissos semelhantes usam o tempo de preparação; os demais usam
 o tempo normal. Os padrões são 45, 60 e 30 minutos, respectivamente, e cada usuário
 pode escolher valores entre 5 e 180 minutos.
+
+Lembretes avulsos são separados dos eventos da agenda. Por exemplo, “me lembra amanhã
+às 12 de comprar ração, encher o pneu e apertar a corrente” cria uma única prévia com
+os itens em tópicos. O bot sempre pede confirmação antes de salvar; escolha “Ajustar”
+para corrigir horário ou itens, ou “Cancelar” para descartar. Se faltar o horário ou
+o que lembrar, o bot pergunta antes de mostrar a confirmação. Sem dia explícito, assume
+hoje e mostra isso na prévia. Após enviar, o lembrete é
+removido do SQLite.
 
 ### 8. Rodar com Docker
 

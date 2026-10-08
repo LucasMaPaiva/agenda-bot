@@ -20,6 +20,7 @@ os.environ.update(
 )
 
 import bot  # noqa: E402
+from agenda_bot.personal_reminders import apply_update, parse_request  # noqa: E402
 
 
 class AgendaLogicTest(unittest.TestCase):
@@ -711,6 +712,131 @@ class PersistenceTest(unittest.TestCase):
         with patch.object(bot, "buscar_eventos") as calendario:
             asyncio.run(bot.verificar_lembretes(contexto))
         calendario.assert_not_called()
+
+    def test_lembrete_avulso_persiste_reivindica_e_remove_apos_envio(self):
+        agora = datetime.now(bot.TZ).replace(second=0, microsecond=0)
+        lembrete_id = bot.salvar_lembrete_avulso(
+            "Matheus", 2, "• comprar ração\n• encher pneu", agora
+        )
+        vencidos = bot.reivindicar_lembretes_avulsos_vencidos(agora)
+        self.assertEqual([row["id"] for row in vencidos], [lembrete_id])
+        self.assertEqual(vencidos[0]["texto"], "• comprar ração\n• encher pneu")
+        self.assertEqual(bot.reivindicar_lembretes_avulsos_vencidos(agora), [])
+
+        bot.liberar_lembrete_avulso(lembrete_id)
+        contexto = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        asyncio.run(bot.verificar_lembretes_avulsos(contexto))
+        contexto.bot.send_message.assert_awaited_once()
+        with bot.conectar_banco() as conexao:
+            restante = conexao.execute(
+                "SELECT id FROM lembretes_avulsos WHERE id = ?", (lembrete_id,)
+            ).fetchone()
+        self.assertIsNone(restante)
+
+
+class PersonalReminderLogicTest(unittest.TestCase):
+    def test_parseia_um_lembrete_com_varios_itens(self):
+        agora = datetime(2026, 10, 8, 10, 0, tzinfo=bot.TZ)
+        pedido = parse_request(
+            "preciso que me lembre as 12 de passar no mercado e comprar ração, "
+            "encher o pneu e apertar a corrente da moto",
+            agora,
+        )
+        self.assertEqual(
+            pedido["items"],
+            [
+                "passar no mercado",
+                "comprar ração",
+                "encher o pneu",
+                "apertar a corrente da moto",
+            ],
+        )
+        self.assertEqual(pedido["time"].strftime("%H:%M"), "12:00")
+        self.assertTrue(bot.eh_pedido_lembrete_avulso("me lembra às 12 de comprar ração"))
+
+    def test_edicao_curta_muda_horario_e_remove_item(self):
+        agora = datetime(2026, 10, 8, 10, 0, tzinfo=bot.TZ)
+        draft = parse_request(
+            "me lembra hoje às 12 de comprar ração e encher o pneu", agora
+        )
+        revised = apply_update(draft, "troca para 13h", agora)
+        revised = apply_update(revised, "tira encher o pneu", agora)
+        self.assertEqual(revised["time"].strftime("%H:%M"), "13:00")
+        self.assertEqual(revised["items"], ["comprar ração"])
+
+
+class PersonalReminderFlowTest(unittest.TestCase):
+    def setUp(self):
+        self.database_path = tempfile.mktemp(suffix=".db")
+        self.database_patch = patch.object(bot, "DATABASE_PATH", self.database_path)
+        self.database_patch.start()
+        bot.inicializar_banco()
+
+    def tearDown(self):
+        self.database_patch.stop()
+        Path(self.database_path).unlink(missing_ok=True)
+
+    def test_lembrete_so_e_salvo_apos_confirmacao(self):
+        # O fluxo de conversa cria somente uma prévia; a ação do botão persiste.
+        async def fluxo():
+            contexto = SimpleNamespace(user_data={})
+            mensagem = MensagemFake()
+            update = SimpleNamespace(
+                message=mensagem,
+                effective_user=SimpleNamespace(id=1),
+                effective_chat=SimpleNamespace(id=42),
+            )
+            with patch.object(bot, "role_do_usuario", return_value="Matheus"):
+                await bot.handle_message(
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            text="me lembra amanhã às 12 de comprar ração e encher pneu",
+                            reply_text=mensagem.reply_text,
+                        ),
+                        effective_user=update.effective_user,
+                        effective_chat=update.effective_chat,
+                    ),
+                    contexto,
+                )
+                with bot.conectar_banco() as conexao:
+                    antes = conexao.execute(
+                        "SELECT COUNT(*) AS total FROM lembretes_avulsos"
+                    ).fetchone()["total"]
+                self.assertEqual(antes, 0)
+                token = next(iter(contexto.user_data["rascunhos_lembretes_avulsos"]))
+                query = QueryFake(f"prc:{token}")
+                await bot.callback_lembrete_avulso(
+                    SimpleNamespace(callback_query=query), contexto
+                )
+                with bot.conectar_banco() as conexao:
+                    depois = conexao.execute(
+                        "SELECT texto FROM lembretes_avulsos"
+                    ).fetchone()["texto"]
+                self.assertEqual(depois, "• comprar ração\n• encher pneu")
+                self.assertIn("amanhã às 12:00", query.edicoes[0][0])
+
+        asyncio.run(fluxo())
+
+    def test_horario_faltando_e_perguntado_antes_da_confirmacao(self):
+        async def fluxo():
+            context = SimpleNamespace(user_data={})
+            message = MensagemFake()
+            update = SimpleNamespace(
+                message=message,
+                effective_chat=SimpleNamespace(id=42),
+            )
+            await bot.personal_reminder_handlers.begin(
+                bot, update, context, "Matheus", "me lembra de comprar ração"
+            )
+            self.assertIn("dia e horário", message.respostas[-1][0])
+            self.assertNotIn("rascunhos_lembretes_avulsos", context.user_data)
+            await bot.personal_reminder_handlers.continue_input(
+                bot, update, context, "Matheus", "amanhã às 12"
+            )
+            self.assertIn("amanhã às 12:00", message.respostas[-1][0])
+            self.assertIn("rascunhos_lembretes_avulsos", context.user_data)
+
+        asyncio.run(fluxo())
 
     def test_configuracao_de_lembrete_e_individual(self):
         async def executar():

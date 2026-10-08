@@ -47,6 +47,7 @@ from agenda_bot.schemas import (
 )
 from agenda_bot.google_tasks import GoogleTasksGateway
 from agenda_bot.handlers import preferences as preference_handlers
+from agenda_bot.handlers import personal_reminders as personal_reminder_handlers
 from agenda_bot.handlers import tasks as task_handlers
 from agenda_bot import reminder_jobs
 from agenda_bot.event_rules import (
@@ -88,6 +89,7 @@ from agenda_bot.planning import (
     planned_task_ids,
     prioritize_tasks,
 )
+from agenda_bot.personal_reminders import eh_pedido_lembrete_avulso
 from agenda_bot.reminders import (
     REMINDER_DEFAULTS,
     REMINDER_SETTING_KEYS,
@@ -284,6 +286,24 @@ def marcar_resumo_proativo_enviado(role: str, dia: date, tipo: str) -> None:
 
 def limpar_resumos_proativos_antigos() -> None:
     _repository().clean_old_proactive_summaries()
+
+
+def salvar_lembrete_avulso(
+    role: str, chat_id: int, texto: str, reminder_at: datetime
+) -> int:
+    return _repository().add_personal_reminder(role, chat_id, texto, reminder_at)
+
+
+def reivindicar_lembretes_avulsos_vencidos(agora: datetime) -> list[sqlite3.Row]:
+    return _repository().claim_due_personal_reminders(agora)
+
+
+def concluir_lembrete_avulso(lembrete_id: int) -> None:
+    _repository().complete_personal_reminder(lembrete_id)
+
+
+def liberar_lembrete_avulso(lembrete_id: int) -> None:
+    _repository().release_personal_reminder(lembrete_id)
 
 
 def configuracao_lembretes(
@@ -1855,6 +1875,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             '"Replica academia de terça para quarta"\n'
             '"Cancelar academia de amanhã"\n'
             '"Onde cabe uma reunião de 1 hora amanhã?"\n\n'
+            '"Me lembra às 12 de comprar ração e encher o pneu"\n\n'
             '"Organiza meu dia amanhã"\n\n'
             "Principais comandos:\n"
             "/agenda · /editar · /replicar · /cancelar\n"
@@ -2255,6 +2276,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
+        if await personal_reminder_handlers.edit_input(
+            _runtime_module(), update, context, role, texto
+        ):
+            return
+        if await personal_reminder_handlers.continue_input(
+            _runtime_module(), update, context, role, texto
+        ):
+            return
+        if eh_pedido_lembrete_avulso(texto):
+            await personal_reminder_handlers.begin(
+                _runtime_module(), update, context, role, texto
+            )
+            return
+
         normalizado = texto_normalizado(texto)
         if "tarefa" in normalizado:
             numero = re.search(
@@ -2427,6 +2462,16 @@ async def verificar_resumos_diarios(context: ContextTypes.DEFAULT_TYPE) -> None:
     await reminder_jobs.check_daily_summaries(_runtime_module(), context)
 
 
+async def verificar_lembretes_avulsos(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await reminder_jobs.check_personal_reminders(_runtime_module(), context)
+
+
+async def callback_lembrete_avulso(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    await personal_reminder_handlers.callback(_runtime_module(), update, context)
+
+
 async def configurar_jobs(application: Application) -> None:
     await reminder_jobs.configure_jobs(_runtime_module(), application)
 
@@ -2473,6 +2518,9 @@ def main() -> None:
     )
     app.add_handler(CallbackQueryHandler(callback_desfazer, pattern=r"^u[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_lembrete, pattern=r"^l[ra]:"))
+    app.add_handler(
+        CallbackQueryHandler(callback_lembrete_avulso, pattern=r"^pr[ced]:")
+    )
     app.add_handler(CallbackQueryHandler(callback_edicao, pattern=r"^e[sca]:"))
     app.add_handler(
         CallbackQueryHandler(callback_cancelamento, pattern=r"^c[sca]:")

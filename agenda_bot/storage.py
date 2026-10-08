@@ -56,6 +56,20 @@ class AgendaRepository:
                     PRIMARY KEY (event_id, start_time, chat_id, reminder_minutes)
                 );
 
+                CREATE TABLE IF NOT EXISTS lembretes_avulsos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role TEXT NOT NULL CHECK (role IN ('Matheus', 'Letícia')),
+                    chat_id INTEGER NOT NULL,
+                    texto TEXT NOT NULL,
+                    reminder_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pendente'
+                        CHECK (status IN ('pendente', 'enviando'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_lembretes_avulsos_due
+                    ON lembretes_avulsos (status, reminder_at);
+
                 CREATE TABLE IF NOT EXISTS preferencias (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     role TEXT NOT NULL,
@@ -110,6 +124,63 @@ class AgendaRepository:
                     estado_updated_at TEXT NOT NULL
                 );
                 """
+            )
+            # Se o processo caiu durante um envio, o lembrete continua elegível.
+            connection.execute(
+                "UPDATE lembretes_avulsos SET status = 'pendente' "
+                "WHERE status = 'enviando'"
+            )
+
+    def add_personal_reminder(
+        self, role: str, chat_id: int, text: str, reminder_at: datetime
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO lembretes_avulsos (
+                    role, chat_id, texto, reminder_at, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    role,
+                    chat_id,
+                    text,
+                    reminder_at.isoformat(),
+                    datetime.now(self.timezone).isoformat(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def claim_due_personal_reminders(self, now: datetime) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, role, chat_id, texto, reminder_at
+                FROM lembretes_avulsos
+                WHERE status = 'pendente' AND reminder_at <= ?
+                ORDER BY reminder_at, id
+                """,
+                (now.isoformat(),),
+            ).fetchall()
+            if rows:
+                connection.executemany(
+                    "UPDATE lembretes_avulsos SET status = 'enviando' "
+                    "WHERE id = ? AND status = 'pendente'",
+                    [(row["id"],) for row in rows],
+                )
+            return rows
+
+    def complete_personal_reminder(self, reminder_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM lembretes_avulsos WHERE id = ?", (reminder_id,)
+            )
+
+    def release_personal_reminder(self, reminder_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE lembretes_avulsos SET status = 'pendente' WHERE id = ?",
+                (reminder_id,),
             )
 
     def conversation_history(

@@ -155,6 +155,32 @@ async def reminder_callback(app, update, context) -> None:
         await query.edit_message_reply_markup(reply_markup=None)
 
 
+async def check_personal_reminders(app, context) -> None:
+    now = app.datetime.now(app.TZ)
+    try:
+        due_reminders = app.reivindicar_lembretes_avulsos_vencidos(now)
+    except Exception:
+        LOGGER.exception("Falha ao buscar lembretes avulsos vencidos")
+        return
+    for reminder in due_reminders:
+        try:
+            await context.bot.send_message(
+                chat_id=reminder["chat_id"],
+                text="🔔 Lembrete:\n" + reminder["texto"],
+            )
+        except Exception:
+            app.liberar_lembrete_avulso(reminder["id"])
+            LOGGER.exception("Falha ao enviar lembrete avulso %s", reminder["id"])
+            continue
+        try:
+            app.concluir_lembrete_avulso(reminder["id"])
+        except Exception:
+            LOGGER.exception(
+                "Lembrete avulso %s foi enviado, mas não pôde ser removido",
+                reminder["id"],
+            )
+
+
 async def check_daily_summaries(app, context) -> None:
     try:
         now = app.datetime.now(app.TZ)
@@ -224,4 +250,10 @@ async def configure_jobs(app, application) -> None:
         interval=60,
         first=10,
         name="resumos-diarios",
+    )
+    application.job_queue.run_repeating(
+        app.verificar_lembretes_avulsos,
+        interval=60,
+        first=15,
+        name="lembretes-avulsos",
     )
