@@ -225,6 +225,7 @@ Use `/versao` para confirmar qual versão está rodando.
 
 /resumo_diario 06:00 20:30
 /resumo_diario desligar
+/funcionalidades
 /lembretes
 /lembretes normal 30
 /lembretes preparo 60

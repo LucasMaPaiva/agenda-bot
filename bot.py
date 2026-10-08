@@ -46,6 +46,7 @@ from agenda_bot.schemas import (
     TAREFA_SCHEMA,
 )
 from agenda_bot.google_tasks import GoogleTasksGateway
+from agenda_bot.handlers import functionalities as functionality_handlers
 from agenda_bot.handlers import preferences as preference_handlers
 from agenda_bot.handlers import personal_reminders as personal_reminder_handlers
 from agenda_bot.handlers import tasks as task_handlers
@@ -1882,7 +1883,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/tarefa · /tarefas · /concluir · /editar_tarefa · /excluir_tarefa\n"
             "/livres · /planejar · /preferencias · /rotinas\n"
             "/lembretes · /resumo_diario\n"
-            "/desfazer · /status · /versao"
+            "/desfazer · /status · /versao\n"
+            "Veja a lista completa: /funcionalidades"
         )
     else:
         mensagem = (
@@ -2211,6 +2213,14 @@ async def versao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def funcionalidades_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    await functionality_handlers.show_functionalities(
+        _runtime_module(), update, context
+    )
+
+
 def obter_status_servicos(role: str) -> list[str]:
     linhas = []
     try:
@@ -2511,6 +2521,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("limpar_conversa", limpar_conversa))
     app.add_handler(CommandHandler("versao", versao))
+    app.add_handler(CommandHandler("funcionalidades", funcionalidades_cmd))
     app.add_handler(CallbackQueryHandler(callback_criacao, pattern=r"^g[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_tarefa, pattern=r"^t[ca]:"))
     app.add_handler(

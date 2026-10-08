@@ -876,6 +876,25 @@ class QueryFake:
         self.edicoes.append((texto, kwargs))
 
 
+class FunctionalityHelpTest(unittest.TestCase):
+    def test_comando_lista_funcoes_e_separa_tipos_de_lembrete(self):
+        async def executar():
+            mensagem = MensagemFake()
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=1), message=mensagem
+            )
+            with patch.object(bot, "role_do_usuario", return_value="Matheus"):
+                await bot.funcionalidades_cmd(update, SimpleNamespace())
+            return mensagem
+
+        mensagem = asyncio.run(executar())
+        texto = mensagem.respostas[0][0]
+        self.assertIn("Lembretes", texto)
+        self.assertIn("/resumo_diario", texto)
+        self.assertIn("/tarefas", texto)
+        self.assertLess(len(texto), 4096)
+
+
 class ConfirmationFlowTest(unittest.TestCase):
     def test_criacao_so_ocorre_depois_da_confirmacao(self):
         async def imediato(funcao, *args, **kwargs):
