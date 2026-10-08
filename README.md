@@ -23,7 +23,11 @@ Esse bot segue as mesmas regras definidas lá:
 
 ## Estrutura do código
 
-- `bot.py`: orquestra os fluxos e handlers do Telegram.
+- `bot.py`: ponto de entrada e composição dos handlers do Telegram.
+- `agenda_bot/event_rules.py`: regras puras para interpretar, filtrar e validar eventos.
+- `agenda_bot/calendar_gateway.py`: operações de leitura e escrita no Google Calendar.
+- `agenda_bot/reminder_jobs.py`: lembretes e resumos executados em segundo plano.
+- `agenda_bot/handlers/`: fluxos de preferências e tarefas do Telegram.
 - `agenda_bot/settings.py`: carrega a configuração do ambiente.
 - `agenda_bot/schemas.py`: define os contratos JSON usados pelos modelos.
 - `agenda_bot/intent_rules.py`: reconhece intenções simples sem chamar IA.

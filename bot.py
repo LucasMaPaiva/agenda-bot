@@ -1,11 +1,11 @@
 import asyncio
-from difflib import SequenceMatcher
 import hmac
 import json
 import logging
 import re
 import secrets
 import sqlite3
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -26,6 +26,17 @@ from telegram.ext import (
     filters,
 )
 
+from agenda_bot.calendar_gateway import (
+    create_event as _create_event,
+    create_events_with_ids as _create_events_with_ids,
+    delete_event as _delete_event,
+    event_exists as _event_exists,
+    fetch_events as _fetch_events,
+    fetch_events_to_cancel as _fetch_events_to_cancel,
+    restoration_body as _restoration_body,
+    undo_action as _undo_action,
+    update_event as _update_event,
+)
 from agenda_bot.schemas import (
     CANCELAMENTO_SCHEMA,
     EDICAO_SCHEMA,
@@ -35,6 +46,27 @@ from agenda_bot.schemas import (
     TAREFA_SCHEMA,
 )
 from agenda_bot.google_tasks import GoogleTasksGateway
+from agenda_bot.handlers import preferences as preference_handlers
+from agenda_bot.handlers import tasks as task_handlers
+from agenda_bot import reminder_jobs
+from agenda_bot.event_rules import (
+    calculate_free_times as _calculate_free_times,
+    conflicts_between_events as _conflicts_between_events,
+    event_end as _event_end,
+    event_responsible as _event_responsible,
+    event_start as _event_start,
+    event_summary as _event_summary,
+    filter_events_by_period as _filter_events_by_period,
+    filter_events_by_term as _filter_events_by_term,
+    format_free_times as _format_free_times,
+    format_schedule as _format_schedule,
+    planned_event_description as _planned_event_description,
+    prepare_edited_event as _prepare_edited_event,
+    prepare_replicated_events as _prepare_replicated_events,
+    replication_conflicts as _replication_conflicts,
+    select_events_to_replicate as _select_events_to_replicate,
+    task_due_label as _task_due_label,
+)
 from agenda_bot.intent_rules import (
     consulta_eh_pessoal,
     eh_consulta_agenda,
@@ -52,11 +84,9 @@ from agenda_bot.intent_rules import (
     texto_normalizado,
 )
 from agenda_bot.planning import (
-    TASK_MARKER,
     allocate_task_blocks,
     planned_task_ids,
     prioritize_tasks,
-    task_due_date,
 )
 from agenda_bot.reminders import (
     REMINDER_DEFAULTS,
@@ -115,6 +145,17 @@ gemini_client = (
 )
 
 calendar_service = None
+
+
+def _runtime_module():
+    """Expõe as fachadas deste módulo aos handlers sem criar imports circulares."""
+    return sys.modules[__name__]
+
+
+def set_reminder_status(check_time: datetime, error: Optional[str]) -> None:
+    global LAST_REMINDER_CHECK, LAST_REMINDER_ERROR
+    LAST_REMINDER_CHECK = check_time
+    LAST_REMINDER_ERROR = error
 
 
 def obter_calendar_service():
@@ -613,65 +654,21 @@ Mensagem: "{texto}"
 
 
 def preparar_evento_editado(evento: dict, alteracoes: dict) -> dict:
-    inicio_atual = inicio_do_evento(evento)
-    fim_atual = fim_do_evento(evento)
-    if not inicio_atual or not fim_atual:
-        raise ValueError("A edição de eventos de dia inteiro ainda não é suportada.")
-
-    nova_data = (
-        date.fromisoformat(alteracoes["nova_data"])
-        if alteracoes.get("nova_data")
-        else inicio_atual.date()
-    )
-    nova_hora_inicio = (
-        datetime.strptime(alteracoes["nova_hora_inicio"], "%H:%M").time()
-        if alteracoes.get("nova_hora_inicio")
-        else inicio_atual.time().replace(tzinfo=None)
-    )
-    novo_inicio = datetime.combine(nova_data, nova_hora_inicio, tzinfo=TZ)
-
-    if alteracoes.get("nova_hora_fim"):
-        nova_hora_fim = datetime.strptime(
-            alteracoes["nova_hora_fim"], "%H:%M"
-        ).time()
-        novo_fim = datetime.combine(nova_data, nova_hora_fim, tzinfo=TZ)
-        if novo_fim <= novo_inicio:
-            novo_fim += timedelta(days=1)
-    else:
-        novo_fim = novo_inicio + (fim_atual - inicio_atual)
-
-    responsavel = alteracoes.get("novo_responsavel") or responsavel_do_evento(evento)
-    resultado = {
-        "id": evento["id"],
-        "titulo": alteracoes.get("novo_titulo") or evento.get("summary", "Sem título"),
-        "responsavel": responsavel,
-        "inicio": novo_inicio,
-        "fim": novo_fim,
-    }
-    ids_tarefa = planned_task_ids([evento])
-    if ids_tarefa:
-        resultado["task_id"] = next(iter(ids_tarefa))
-    return resultado
+    return _prepare_edited_event(evento, alteracoes, TZ)
 
 
 def descricao_evento_planejado(evento: dict) -> str:
-    linhas = [f"Responsável: {evento['responsavel']}"]
-    if evento.get("task_id"):
-        linhas.append(f"{TASK_MARKER} {evento['task_id']}")
-    return "\n".join(linhas)
+    return _planned_event_description(evento)
 
 
 def atualizar_evento_calendar(evento: dict) -> None:
-    body = {
-        "summary": evento["titulo"],
-        "description": descricao_evento_planejado(evento),
-        "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
-        "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
-        "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
-    }
-    obter_calendar_service().events().patch(
-        calendarId=CALENDAR_ID, eventId=evento["id"], body=body
-    ).execute()
+    _update_event(
+        evento,
+        obter_calendar_service,
+        CALENDAR_ID,
+        TIMEZONE,
+        COLOR_BY_RESPONSAVEL,
+    )
 
 
 def caminho_token_tasks(role: str) -> Path:
@@ -760,70 +757,29 @@ def excluir_tarefa_google(role: str, task_id: str) -> None:
 
 
 def evento_ja_existe(evento: dict) -> bool:
-    resposta = (
-        obter_calendar_service().events()
-        .list(
-            calendarId=CALENDAR_ID,
-            timeMin=evento["inicio"].isoformat(),
-            timeMax=evento["fim"].isoformat(),
-            singleEvents=True,
-            q=evento["titulo"],
-            maxResults=10,
-        )
-        .execute()
-    )
-    for existente in resposta.get("items", []):
-        if existente.get("summary") != evento["titulo"]:
-            continue
-        inicio_existente = existente.get("start", {}).get("dateTime")
-        if not inicio_existente:
-            continue
-        inicio_existente = datetime.fromisoformat(
-            inicio_existente.replace("Z", "+00:00")
-        ).astimezone(TZ)
-        if (
-            inicio_existente == evento["inicio"]
-            and responsavel_do_evento(existente) == evento["responsavel"]
-        ):
-            return True
-    return False
+    return _event_exists(evento, obter_calendar_service, CALENDAR_ID, TZ)
 
 
 def criar_evento_calendar(evento: dict) -> bool:
-    if evento_ja_existe(evento):
-        return False
-
-    body = {
-        "summary": evento["titulo"],
-        "description": descricao_evento_planejado(evento),
-        "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
-        "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
-        "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
-    }
-    obter_calendar_service().events().insert(
-        calendarId=CALENDAR_ID, body=body
-    ).execute()
-    return True
+    return _create_event(
+        evento,
+        obter_calendar_service,
+        CALENDAR_ID,
+        TIMEZONE,
+        TZ,
+        COLOR_BY_RESPONSAVEL,
+    )
 
 
 def criar_eventos_calendar_com_ids(eventos: list[dict]) -> list[str]:
-    ids = []
-    for evento in eventos:
-        if evento_ja_existe(evento):
-            continue
-        body = {
-            "summary": evento["titulo"],
-            "description": descricao_evento_planejado(evento),
-            "start": {"dateTime": evento["inicio"].isoformat(), "timeZone": TIMEZONE},
-            "end": {"dateTime": evento["fim"].isoformat(), "timeZone": TIMEZONE},
-            "colorId": COLOR_BY_RESPONSAVEL.get(evento["responsavel"], "2"),
-        }
-        criado = obter_calendar_service().events().insert(
-            calendarId=CALENDAR_ID, body=body
-        ).execute()
-        if criado.get("id"):
-            ids.append(criado["id"])
-    return ids
+    return _create_events_with_ids(
+        eventos,
+        obter_calendar_service,
+        CALENDAR_ID,
+        TIMEZONE,
+        TZ,
+        COLOR_BY_RESPONSAVEL,
+    )
 
 
 def criar_eventos_calendar(eventos: list[dict]) -> int:
@@ -994,317 +950,77 @@ def mensagem_erro_usuario(acao: str, erro: Exception) -> str:
 
 
 def buscar_eventos(inicio: datetime, fim: datetime) -> list[dict]:
-    resposta = (
-        obter_calendar_service().events()
-        .list(
-            calendarId=CALENDAR_ID,
-            timeMin=inicio.isoformat(),
-            timeMax=fim.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=50,
-        )
-        .execute()
+    return _fetch_events(
+        inicio, fim, obter_calendar_service, CALENDAR_ID
     )
-    return resposta.get("items", [])
 
 
 def buscar_eventos_para_cancelar(
     termo: Optional[str], inicio: datetime, fim: datetime
 ) -> list[dict]:
-    parametros = {
-        "calendarId": CALENDAR_ID,
-        "timeMin": inicio.isoformat(),
-        "timeMax": fim.isoformat(),
-        "singleEvents": True,
-        "orderBy": "startTime",
-        "maxResults": 20,
-    }
-    if termo:
-        parametros["q"] = termo
-    resposta = obter_calendar_service().events().list(**parametros).execute()
-    return resposta.get("items", [])
+    return _fetch_events_to_cancel(
+        termo, inicio, fim, obter_calendar_service, CALENDAR_ID
+    )
 
 
 def excluir_evento_calendar(event_id: str) -> None:
-    obter_calendar_service().events().delete(
-        calendarId=CALENDAR_ID, eventId=event_id
-    ).execute()
+    _delete_event(event_id, obter_calendar_service, CALENDAR_ID)
 
 
 def corpo_restauracao_evento(evento: dict) -> dict:
-    chaves = (
-        "summary",
-        "description",
-        "start",
-        "end",
-        "colorId",
-        "location",
-        "reminders",
-    )
-    return {chave: evento[chave] for chave in chaves if chave in evento}
+    return _restoration_body(evento)
 
 
 def executar_desfazer(acao: sqlite3.Row) -> str:
-    payload = json.loads(acao["payload_json"])
-    service = obter_calendar_service().events()
-    if acao["tipo"] == "criacao":
-        removidos = 0
-        for event_id in payload.get("event_ids", []):
-            try:
-                service.delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
-                removidos += 1
-            except HttpError as erro:
-                if getattr(erro.resp, "status", None) != 404:
-                    raise
-        return f"{removidos} evento(s) criado(s) foram removidos"
-    evento = payload["evento"]
-    body = corpo_restauracao_evento(evento)
-    if acao["tipo"] == "edicao":
-        service.patch(
-            calendarId=CALENDAR_ID, eventId=evento["id"], body=body
-        ).execute()
-        return "o evento voltou ao estado anterior"
-    if acao["tipo"] == "cancelamento":
-        service.insert(calendarId=CALENDAR_ID, body=body).execute()
-        return "o evento cancelado foi recriado"
-    raise ValueError("tipo de ação não suportado")
+    return _undo_action(acao, obter_calendar_service, CALENDAR_ID)
 
 
 def inicio_do_evento(evento: dict) -> Optional[datetime]:
-    valor = evento.get("start", {}).get("dateTime")
-    if not valor:
-        return None
-    return datetime.fromisoformat(valor.replace("Z", "+00:00")).astimezone(TZ)
+    return _event_start(evento, TZ)
 
 
 def fim_do_evento(evento: dict) -> Optional[datetime]:
-    valor = evento.get("end", {}).get("dateTime")
-    if not valor:
-        return None
-    return datetime.fromisoformat(valor.replace("Z", "+00:00")).astimezone(TZ)
+    return _event_end(evento, TZ)
 
 
 def responsavel_do_evento(evento: dict) -> str:
-    descricao = evento.get("description", "")
-    correspondencia = re.search(
-        r"Responsável:\s*(Matheus|Letícia|Ambos)", descricao, flags=re.IGNORECASE
-    )
-    if not correspondencia:
-        return "Ambos"
-    valor = correspondencia.group(1).casefold()
-    return {"matheus": "Matheus", "letícia": "Letícia", "ambos": "Ambos"}[valor]
+    return _event_responsible(evento)
 
 
 def resumo_evento(evento: dict) -> str:
-    titulo = evento.get("summary", "Sem título")
-    if len(titulo) > 80:
-        titulo = f"{titulo[:77]}…"
-    inicio = inicio_do_evento(evento)
-    if inicio:
-        horario = inicio.strftime("%d/%m/%Y às %H:%M")
-    else:
-        horario = f"{evento.get('start', {}).get('date', '')} (dia inteiro)"
-    return f"{titulo} — {horario} ({responsavel_do_evento(evento)})"
+    return _event_summary(evento, TZ)
 
 
 def formatar_agenda(eventos: list[dict], rotulo: str) -> str:
-    if not eventos:
-        return f"📅 Você não tem compromissos para {rotulo}."
-
-    linhas = [f"📅 Compromissos para {rotulo}:"]
-    for evento in eventos[:30]:
-        titulo = evento.get("summary", "Sem título")
-        if len(titulo) > 100:
-            titulo = f"{titulo[:97]}…"
-        inicio = inicio_do_evento(evento)
-        fim = fim_do_evento(evento)
-        if inicio:
-            horario = inicio.strftime("%d/%m, %H:%M")
-            if fim:
-                horario += f"–{fim.strftime('%H:%M')}"
-        else:
-            data = evento.get("start", {}).get("date", "")
-            horario = f"{data} (dia inteiro)"
-        linhas.append(f"\n• {horario} — {titulo} ({responsavel_do_evento(evento)})")
-
-    if len(eventos) > 30:
-        linhas.append(f"\n… e mais {len(eventos) - 30} compromissos.")
-    return "".join(linhas)
+    return _format_schedule(eventos, rotulo, TZ)
 
 
 def filtrar_eventos_por_periodo(eventos: list[dict], periodo: str) -> list[dict]:
-    limites = {
-        "madrugada": (0, 6),
-        "manhã": (6, 12),
-        "tarde": (12, 18),
-        "noite": (18, 24),
-    }
-    if periodo not in limites:
-        return eventos
-
-    hora_inicio, hora_fim = limites[periodo]
-    encontrados = []
-    for evento in eventos:
-        inicio = inicio_do_evento(evento)
-        fim = fim_do_evento(evento)
-        if not inicio or not fim:
-            # Um evento de dia inteiro também ocupa o período consultado.
-            encontrados.append(evento)
-            continue
-
-        dia = inicio.date()
-        ultimo_dia = (fim - timedelta(microseconds=1)).date()
-        while dia <= ultimo_dia:
-            inicio_dia = datetime.combine(dia, datetime.min.time(), tzinfo=TZ)
-            inicio_periodo = inicio_dia + timedelta(hours=hora_inicio)
-            fim_periodo = inicio_dia + timedelta(hours=hora_fim)
-            if inicio < fim_periodo and inicio_periodo < fim:
-                encontrados.append(evento)
-                break
-            dia += timedelta(days=1)
-    return encontrados
+    return _filter_events_by_period(eventos, periodo, TZ)
 
 
 def filtrar_eventos_por_termo(eventos: list[dict], termo: str) -> list[dict]:
-    termo_normalizado = texto_normalizado(termo).strip()
-    palavras_termo = set(re.findall(r"[a-z0-9]+", termo_normalizado))
-    if not palavras_termo:
-        return eventos
-    encontrados = []
-    for evento in eventos:
-        titulo_normalizado = texto_normalizado(evento.get("summary", ""))
-        palavras_titulo = set(re.findall(r"[a-z0-9]+", titulo_normalizado))
-        termo_sem_simbolos = " ".join(sorted(palavras_termo))
-        titulo_sem_simbolos = " ".join(sorted(palavras_titulo))
-        palavras_aproximadas = all(
-            any(
-                SequenceMatcher(None, palavra, palavra_titulo).ratio() >= 0.80
-                for palavra_titulo in palavras_titulo
-            )
-            for palavra in palavras_termo
-        )
-        titulo_aproximado = (
-            SequenceMatcher(None, termo_sem_simbolos, titulo_sem_simbolos).ratio()
-            >= 0.78
-        )
-        if (
-            termo_normalizado in titulo_normalizado
-            or palavras_termo <= palavras_titulo
-            or palavras_aproximadas
-            or titulo_aproximado
-        ):
-            encontrados.append(evento)
-    return encontrados
+    return _filter_events_by_term(eventos, termo)
 
 
 def selecionar_eventos_para_replicar(
     eventos: list[dict], termos: list[str]
 ) -> list[dict]:
-    if not termos:
-        return eventos
-
-    selecionados = {}
-    ausentes = []
-    for termo in termos:
-        encontrados = filtrar_eventos_por_termo(eventos, termo)
-        if not encontrados:
-            ausentes.append(termo)
-            continue
-        for evento in encontrados:
-            chave = evento.get("id") or (
-                evento.get("summary"),
-                json.dumps(evento.get("start", {}), sort_keys=True),
-            )
-            selecionados[chave] = evento
-    if ausentes:
-        disponiveis = ", ".join(
-            dict.fromkeys(
-                evento.get("summary", "Sem título") for evento in eventos
-            )
-        )
-        complemento = f". Disponíveis no dia: {disponiveis}" if disponiveis else ""
-        raise ValueError(
-            "não encontrei no dia de origem: "
-            + ", ".join(ausentes)
-            + complemento
-        )
-    return sorted(
-        selecionados.values(),
-        key=lambda evento: inicio_do_evento(evento) or datetime.max.replace(tzinfo=TZ),
-    )
+    return _select_events_to_replicate(eventos, termos, TZ)
 
 
 def preparar_eventos_replicados(
     eventos: list[dict], data_destino: date
 ) -> list[dict]:
-    copias = []
-    for evento in eventos:
-        inicio_original = inicio_do_evento(evento)
-        fim_original = fim_do_evento(evento)
-        if not inicio_original or not fim_original:
-            raise ValueError(
-                "a replicação de eventos de dia inteiro ainda não é suportada"
-            )
-        novo_inicio = datetime.combine(
-            data_destino,
-            inicio_original.time().replace(tzinfo=None),
-            tzinfo=TZ,
-        )
-        novo_fim = novo_inicio + (fim_original - inicio_original)
-        copias.append(
-            {
-                "titulo": evento.get("summary", "Sem título"),
-                "responsavel": responsavel_do_evento(evento),
-                "inicio": novo_inicio,
-                "fim": novo_fim,
-                "recorrencia": "nenhuma",
-            }
-        )
-    return copias
+    return _prepare_replicated_events(eventos, data_destino, TZ)
 
 
 def conflitos_da_replicacao(
     eventos_novos: list[dict], ignorar_ids: Optional[set[str]] = None
 ) -> list[str]:
-    if not eventos_novos:
-        return []
-    inicio_busca = min(evento["inicio"] for evento in eventos_novos).replace(
-        hour=0, minute=0, second=0, microsecond=0
+    return _replication_conflicts(
+        eventos_novos, TZ, buscar_eventos, ignorar_ids
     )
-    fim_busca = (
-        max(evento["fim"] for evento in eventos_novos)
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        + timedelta(days=1)
-    )
-    conflitos = []
-    ordenados = sorted(eventos_novos, key=lambda evento: evento["inicio"])
-    for indice, novo in enumerate(ordenados):
-        for outro in ordenados[indice + 1 :]:
-            if outro["inicio"] >= novo["fim"]:
-                break
-            if novo["inicio"] < outro["fim"]:
-                conflitos.append(
-                    f"{novo['titulo']} conflita com {outro['titulo']} "
-                    "entre os eventos copiados"
-                )
-
-    existentes = buscar_eventos(inicio_busca, fim_busca)
-    for novo in eventos_novos:
-        for existente in existentes:
-            if existente.get("id") in (ignorar_ids or set()):
-                continue
-            inicio_existente = inicio_do_evento(existente)
-            fim_existente = fim_do_evento(existente)
-            if not inicio_existente or not fim_existente:
-                continue
-            if novo["inicio"] < fim_existente and inicio_existente < novo["fim"]:
-                conflitos.append(
-                    f"{novo['titulo']} conflita com "
-                    f"{existente.get('summary', 'Sem título')} "
-                    f"({inicio_existente.strftime('%H:%M')}–{fim_existente.strftime('%H:%M')})"
-                )
-    return conflitos
 
 
 async def responder_consulta(
@@ -1463,70 +1179,15 @@ def calcular_horarios_livres(
     duracao_minutos: int,
     eventos_existentes: Optional[list[dict]] = None,
 ) -> list[tuple[datetime, datetime]]:
-    if duracao_minutos < 15 or duracao_minutos > 480:
-        raise ValueError("a duração deve ficar entre 15 minutos e 8 horas")
-    try:
-        hora_inicio = datetime.strptime(
-            obter_configuracao(role, "inicio_dia", "06:00"), "%H:%M"
-        ).time()
-        hora_fim = datetime.strptime(
-            obter_configuracao(role, "fim_dia", "22:00"), "%H:%M"
-        ).time()
-        buffer_minutos = int(obter_configuracao(role, "buffer_minutos", "15"))
-    except ValueError as erro:
-        raise ValueError("as preferências de horário estão inválidas") from erro
-
-    inicio_janela = datetime.combine(data_consulta, hora_inicio, tzinfo=TZ)
-    fim_janela = datetime.combine(data_consulta, hora_fim, tzinfo=TZ)
-    agora = datetime.now(TZ)
-    if data_consulta == agora.date() and agora > inicio_janela:
-        arredondado = agora.replace(second=0, microsecond=0)
-        if agora.second or agora.microsecond:
-            arredondado += timedelta(minutes=1)
-        resto = arredondado.minute % 15
-        if resto:
-            arredondado += timedelta(minutes=15 - resto)
-        inicio_janela = arredondado
-    if inicio_janela >= fim_janela:
-        return []
-    eventos = [
-        evento
-        for evento in (
-            eventos_existentes
-            if eventos_existentes is not None
-            else buscar_eventos(inicio_janela, fim_janela)
-        )
-        if responsavel_do_evento(evento) in {role, "Ambos"}
-    ]
-    ocupados = []
-    for evento in eventos:
-        inicio = inicio_do_evento(evento)
-        fim = fim_do_evento(evento)
-        if inicio and fim:
-            ocupados.append(
-                (
-                    max(inicio_janela, inicio - timedelta(minutes=buffer_minutos)),
-                    min(fim_janela, fim + timedelta(minutes=buffer_minutos)),
-                )
-            )
-    ocupados.sort()
-    mesclados = []
-    for inicio, fim in ocupados:
-        if mesclados and inicio <= mesclados[-1][1]:
-            mesclados[-1] = (mesclados[-1][0], max(mesclados[-1][1], fim))
-        else:
-            mesclados.append((inicio, fim))
-
-    livres = []
-    cursor = inicio_janela
-    duracao = timedelta(minutes=duracao_minutos)
-    for inicio, fim in mesclados:
-        if inicio - cursor >= duracao:
-            livres.append((cursor, inicio))
-        cursor = max(cursor, fim)
-    if fim_janela - cursor >= duracao:
-        livres.append((cursor, fim_janela))
-    return livres
+    return _calculate_free_times(
+        role,
+        data_consulta,
+        duracao_minutos,
+        TZ,
+        obter_configuracao,
+        buscar_eventos,
+        eventos_existentes,
+    )
 
 
 def formatar_horarios_livres(
@@ -1534,53 +1195,15 @@ def formatar_horarios_livres(
     duracao_minutos: int,
     horarios: list[tuple[datetime, datetime]],
 ) -> str:
-    if not horarios:
-        return (
-            f"⏱ Não encontrei uma janela de {duracao_minutos} min em "
-            f"{data_consulta.strftime('%d/%m/%Y')}."
-        )
-    linhas = [
-        f"⏱ Horários livres em {data_consulta.strftime('%d/%m/%Y')} "
-        f"para {duracao_minutos} min:"
-    ]
-    for inicio, fim in horarios[:6]:
-        linhas.append(f"\n• {inicio.strftime('%H:%M')}–{fim.strftime('%H:%M')}")
-    return "".join(linhas)
+    return _format_free_times(data_consulta, duracao_minutos, horarios)
 
 
 def conflitos_entre_eventos(eventos: list[dict]) -> list[str]:
-    com_horario = []
-    for evento in eventos:
-        inicio = inicio_do_evento(evento)
-        fim = fim_do_evento(evento)
-        if inicio and fim:
-            com_horario.append((inicio, fim, evento.get("summary", "Sem título")))
-    com_horario.sort(key=lambda item: item[0])
-    conflitos = []
-    for indice, (inicio, fim, titulo) in enumerate(com_horario):
-        for outro_inicio, outro_fim, outro_titulo in com_horario[indice + 1 :]:
-            if outro_inicio >= fim:
-                break
-            minutos = int(
-                (min(fim, outro_fim) - max(inicio, outro_inicio)).total_seconds()
-                // 60
-            )
-            if minutos > 0:
-                conflitos.append(
-                    f"{titulo} conflita com {outro_titulo} por {minutos} min"
-                )
-    return conflitos
+    return _conflicts_between_events(eventos, TZ)
 
 
 def rotulo_prazo_tarefa(tarefa: dict, data_consulta: date) -> str:
-    prazo = task_due_date(tarefa)
-    if not prazo:
-        return "sem prazo"
-    if prazo < data_consulta:
-        return f"atrasada desde {prazo.strftime('%d/%m')}"
-    if prazo == data_consulta:
-        return "vence nesse dia"
-    return f"vence em {prazo.strftime('%d/%m')}"
+    return _task_due_label(tarefa, data_consulta)
 
 
 def carregar_tarefas_planejamento(role: str) -> tuple[list[dict], Optional[str]]:
@@ -1919,75 +1542,22 @@ async def callback_criacao(
 
 
 def resumo_tarefa(tarefa: dict) -> str:
-    prazo = tarefa.get("prazo")
-    prazo_formatado = (
-        date.fromisoformat(prazo).strftime("%d/%m/%Y") if prazo else "sem prazo"
-    )
-    texto = f"{tarefa['titulo']}\n📅 {prazo_formatado}"
-    if tarefa.get("notas"):
-        texto += f"\n📝 {tarefa['notas']}"
-    return texto
+    return task_handlers.task_summary(tarefa)
 
 
 async def iniciar_criacao_tarefa(
     update: Update, context: ContextTypes.DEFAULT_TYPE, role: str, texto: str
 ) -> None:
-    tarefa_extraida = await asyncio.to_thread(extrair_tarefa, texto)
-    token = salvar_acao_pendente(
-        context,
-        "tarefas_pendentes",
-        {"role": role, "tarefa": tarefa_extraida},
-    )
-    teclado = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Criar tarefa", callback_data=f"tc:{token}")],
-            [InlineKeyboardButton("Não criar", callback_data=f"ta:{token}")],
-        ]
-    )
-    await update.message.reply_text(
-        f"Confira a tarefa:\n\n{resumo_tarefa(tarefa_extraida)}",
-        reply_markup=teclado,
+    await task_handlers.begin_task_creation(
+        _runtime_module(), update, context, role, texto
     )
 
 
 async def callback_tarefa(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    query = update.callback_query
-    role = role_do_usuario(query.from_user.id)
-    if not role:
-        await query.answer("Telegram não autorizado.", show_alert=True)
-        return
-    await query.answer()
-
-    acao, token = query.data.split(":", 1)
-    pendentes = context.user_data.get("tarefas_pendentes", {})
-    pendente = pendentes.get(token)
-    if not pendente or datetime.now(TZ).timestamp() - pendente["criado_em"] > 900:
-        pendentes.pop(token, None)
-        await query.edit_message_text(
-            "⌛ Esta confirmação expirou. Envie a tarefa novamente."
-        )
-        return
-    if acao == "ta":
-        pendentes.pop(token, None)
-        await query.edit_message_text("👍 Criação cancelada. Nada foi adicionado.")
-        return
-    if pendente["role"] != role:
-        await query.edit_message_text("❌ Esta tarefa pertence a outro usuário.")
-        return
-
-    try:
-        await asyncio.to_thread(criar_tarefa_google, role, pendente["tarefa"])
-    except Exception as erro:
-        LOGGER.exception("Falha ao criar tarefa")
-        await query.edit_message_text(
-            mensagem_erro_usuario("criar a tarefa", erro)
-        )
-        return
-    pendentes.pop(token, None)
-    await query.edit_message_text(
-        f"✅ Tarefa criada para {role}:\n\n{resumo_tarefa(pendente['tarefa'])}"
+    await task_handlers.task_creation_callback(
+        _runtime_module(), update, context
     )
 
 
@@ -2413,72 +1983,15 @@ async def replicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def tarefa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if not context.args:
-        await update.message.reply_text(
-            "Use: /tarefa DESCRIÇÃO\nExemplo: /tarefa comprar sabão até sexta"
-        )
-        return
-    try:
-        await iniciar_criacao_tarefa(update, context, role, " ".join(context.args))
-    except Exception as erro:
-        LOGGER.exception("Falha ao preparar tarefa")
-        await update.message.reply_text(
-            mensagem_erro_usuario("preparar a tarefa", erro)
-        )
+    await task_handlers.create_task_command(_runtime_module(), update, context)
 
 
 async def tarefas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    try:
-        itens = await asyncio.to_thread(listar_tarefas_google, role)
-    except Exception as erro:
-        LOGGER.exception("Falha ao listar tarefas")
-        await update.message.reply_text(
-            mensagem_erro_usuario("listar suas tarefas", erro)
-        )
-        return
-    if not itens:
-        context.user_data["ultima_lista_tarefas"] = []
-        await update.message.reply_text("✅ Você não tem tarefas pendentes.")
-        return
-
-    itens = itens[:30]
-    context.user_data["ultima_lista_tarefas"] = [item["id"] for item in itens]
-    context.user_data["ultima_lista_tarefas_itens"] = itens
-    linhas = [f"📋 Tarefas de {role}:"]
-    for indice, item in enumerate(itens, start=1):
-        prazo = item.get("due")
-        prazo_texto = (
-            datetime.fromisoformat(prazo.replace("Z", "+00:00")).strftime("%d/%m")
-            if prazo
-            else "sem prazo"
-        )
-        titulo = item.get("title", "Sem título")
-        if len(titulo) > 90:
-            titulo = f"{titulo[:87]}…"
-        linhas.append(f"\n{indice}. {titulo} — {prazo_texto}")
-    linhas.append("\n\nPara concluir: /concluir NÚMERO")
-    await update.message.reply_text("".join(linhas))
+    await task_handlers.list_tasks_command(_runtime_module(), update, context)
 
 
 async def concluir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text(
-            "Primeiro use /tarefas e depois /concluir NÚMERO."
-        )
-        return
-    await concluir_tarefa_da_lista(update, context, role, int(context.args[0]))
+    await task_handlers.complete_task_command(_runtime_module(), update, context)
 
 
 async def concluir_tarefa_da_lista(
@@ -2487,499 +2000,85 @@ async def concluir_tarefa_da_lista(
     role: str,
     numero: int,
 ) -> None:
-    indice = numero - 1
-    ids = context.user_data.get("ultima_lista_tarefas", [])
-    if indice < 0 or indice >= len(ids):
-        await update.message.reply_text("Número inválido. Use /tarefas novamente.")
-        return
-    try:
-        await asyncio.to_thread(concluir_tarefa_google, role, ids[indice])
-    except Exception as erro:
-        LOGGER.exception("Falha ao concluir tarefa")
-        await update.message.reply_text(
-            mensagem_erro_usuario("concluir a tarefa", erro)
-        )
-        return
-    await update.message.reply_text("✅ Tarefa concluída.")
+    await task_handlers.complete_listed_task(
+        _runtime_module(), update, context, role, numero
+    )
 
 
 async def editar_tarefa_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if len(context.args) < 2 or not context.args[0].isdigit():
-        await update.message.reply_text(
-            "Use /tarefas e depois: /editar_tarefa NÚMERO NOVO TÍTULO"
-        )
-        return
-    indice = int(context.args[0]) - 1
-    itens = context.user_data.get("ultima_lista_tarefas_itens", [])
-    if indice < 0 or indice >= len(itens):
-        await update.message.reply_text("Número inválido. Use /tarefas novamente.")
-        return
-    novo_titulo = " ".join(context.args[1:]).strip()
-    token = salvar_acao_pendente(
-        context,
-        "alteracoes_tarefas_pendentes",
-        {"role": role, "item": itens[indice], "novo_titulo": novo_titulo},
-    )
-    await update.message.reply_text(
-        f"Alterar tarefa:\n{itens[indice].get('title', 'Sem título')}\n→ {novo_titulo}?",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Confirmar", callback_data=f"tuc:{token}")],
-             [InlineKeyboardButton("Não alterar", callback_data=f"tua:{token}")]]
-        ),
-    )
+    await task_handlers.edit_task_command(_runtime_module(), update, context)
 
 
 async def excluir_tarefa_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("Use /tarefas e depois: /excluir_tarefa NÚMERO")
-        return
-    indice = int(context.args[0]) - 1
-    itens = context.user_data.get("ultima_lista_tarefas_itens", [])
-    if indice < 0 or indice >= len(itens):
-        await update.message.reply_text("Número inválido. Use /tarefas novamente.")
-        return
-    token = salvar_acao_pendente(
-        context,
-        "exclusoes_tarefas_pendentes",
-        {"role": role, "item": itens[indice]},
-    )
-    await update.message.reply_text(
-        f"Excluir a tarefa “{itens[indice].get('title', 'Sem título')}”?",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Confirmar exclusão", callback_data=f"tdc:{token}")],
-             [InlineKeyboardButton("Não excluir", callback_data=f"tda:{token}")]]
-        ),
-    )
+    await task_handlers.delete_task_command(_runtime_module(), update, context)
 
 
 async def callback_alteracao_tarefa(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    query = update.callback_query
-    role = role_do_usuario(query.from_user.id)
-    if not role:
-        await query.answer("Telegram não autorizado.", show_alert=True)
-        return
-    await query.answer()
-    acao, token = query.data.split(":", 1)
-    chave = (
-        "alteracoes_tarefas_pendentes" if acao.startswith("tu")
-        else "exclusoes_tarefas_pendentes"
+    await task_handlers.task_change_callback(
+        _runtime_module(), update, context
     )
-    pendentes = context.user_data.get(chave, {})
-    pendente = pendentes.get(token)
-    expirou = pendente and (
-        datetime.now(TZ).timestamp() - pendente["criado_em"] > 900
-    )
-    if not pendente or expirou or pendente["role"] != role:
-        pendentes.pop(token, None)
-        await query.edit_message_text("⌛ Esta confirmação expirou.")
-        return
-    if acao in {"tua", "tda"}:
-        pendentes.pop(token, None)
-        await query.edit_message_text("👍 Nada foi alterado.")
-        return
-    item = pendente["item"]
-    try:
-        if acao == "tuc":
-            await asyncio.to_thread(
-                editar_tarefa_google, role, item["id"], pendente["novo_titulo"]
-            )
-            mensagem = "✅ Tarefa alterada."
-        else:
-            await asyncio.to_thread(excluir_tarefa_google, role, item["id"])
-            mensagem = "✅ Tarefa excluída."
-    except Exception as erro:
-        operacao = "editar a tarefa" if acao == "tuc" else "excluir a tarefa"
-        await query.edit_message_text(mensagem_erro_usuario(operacao, erro))
-        return
-    pendentes.pop(token, None)
-    await query.edit_message_text(mensagem)
 
 
-async def limpar_conversa(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    context.user_data.pop("historico_conversa", None)
-    await asyncio.to_thread(apagar_conversa, role)
-    await update.message.reply_text("🧹 Histórico e contexto da conversa limpos.")
+async def limpar_conversa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await preference_handlers.clear_conversation(_runtime_module(), update, context)
 
 
 async def preferencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    texto = " ".join(context.args).strip()
-    if not texto:
-        await update.message.reply_text(
-            "Use: /preferencia TEXTO\n"
-            "Exemplo: /preferencia Academia é prioridade de segunda a quinta"
-        )
-        return
-    if len(texto) > 300:
-        await update.message.reply_text("A preferência pode ter no máximo 300 caracteres.")
-        return
-    partes = texto.split()
-    if partes[0].casefold() == "buffer" and len(partes) == 2 and partes[1].isdigit():
-        minutos = int(partes[1])
-        if minutos < 0 or minutos > 120:
-            await update.message.reply_text("O buffer deve ficar entre 0 e 120 minutos.")
-            return
-        salvar_configuracao(role, "buffer_minutos", str(minutos))
-        await update.message.reply_text(f"✅ Buffer salvo: {minutos} minutos.")
-        return
-    if partes[0].casefold() == "horario" and len(partes) == 3:
-        try:
-            inicio_dia = datetime.strptime(partes[1], "%H:%M")
-            fim_dia = datetime.strptime(partes[2], "%H:%M")
-        except ValueError:
-            await update.message.reply_text("Use: /preferencia horario 06:00 22:00")
-            return
-        if inicio_dia >= fim_dia:
-            await update.message.reply_text("O início do dia deve ser anterior ao fim.")
-            return
-        salvar_configuracao(role, "inicio_dia", partes[1])
-        salvar_configuracao(role, "fim_dia", partes[2])
-        await update.message.reply_text(
-            f"✅ Janela do dia salva: {partes[1]}–{partes[2]}."
-        )
-        return
-    if (
-        partes[0].casefold() in {"duracao_tarefa", "tarefa"}
-        and len(partes) == 2
-        and partes[1].isdigit()
-    ):
-        minutos = int(partes[1])
-        if minutos < 15 or minutos > 120:
-            await update.message.reply_text(
-                "A duração padrão deve ficar entre 15 e 120 minutos."
-            )
-            return
-        salvar_configuracao(role, "duracao_tarefa", str(minutos))
-        await update.message.reply_text(
-            f"✅ Duração padrão das tarefas: {minutos} minutos."
-        )
-        return
-    if len(listar_preferencias(role)) >= 20:
-        await update.message.reply_text(
-            "Você já tem 20 preferências. Remova uma com /remover_preferencia."
-        )
-        return
-    adicionar_preferencia(role, texto)
-    await update.message.reply_text("✅ Preferência salva e usada nas conversas.")
+    await preference_handlers.save_preference(_runtime_module(), update, context)
 
 
 async def preferencias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    itens = listar_preferencias(role)
-    linhas = [f"⚙️ Preferências de {role}:"]
-    if itens:
-        linhas.extend(f"\n{indice}. {item['texto']}" for indice, item in enumerate(itens, 1))
-    else:
-        linhas.append("\nNenhuma preferência textual salva.")
-    linhas.append(
-        f"\n\nHorário: {obter_configuracao(role, 'inicio_dia', '06:00')}–"
-        f"{obter_configuracao(role, 'fim_dia', '22:00')}"
-        f"\nBuffer: {obter_configuracao(role, 'buffer_minutos', '15')} min"
-        f"\nDuração das tarefas: "
-        f"{obter_configuracao(role, 'duracao_tarefa', '30')} min"
-    )
-    await update.message.reply_text("".join(linhas))
+    await preference_handlers.list_preferences(_runtime_module(), update, context)
 
 
 async def remover_preferencia_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("Use: /remover_preferencia NÚMERO")
-        return
-    if remover_preferencia(role, int(context.args[0])):
-        await update.message.reply_text("✅ Preferência removida.")
-    else:
-        await update.message.reply_text("Número inválido. Use /preferencias.")
+    await preference_handlers.remove_preference(_runtime_module(), update, context)
 
 
 async def livres(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if not context.args:
-        await update.message.reply_text("Use: /livres DATA [MINUTOS]\nExemplo: /livres amanhã 60")
-        return
-    try:
-        data_consulta = resolver_data_curta(context.args[0])
-        duracao = int(context.args[1]) if len(context.args) > 1 else 60
-        horarios = await asyncio.to_thread(
-            calcular_horarios_livres, role, data_consulta, duracao
-        )
-        await update.message.reply_text(
-            formatar_horarios_livres(data_consulta, duracao, horarios)
-        )
-    except Exception as erro:
-        await update.message.reply_text(mensagem_erro_usuario("calcular horários livres", erro))
+    await preference_handlers.free_times(_runtime_module(), update, context)
 
 
 async def planejar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if len(context.args) > 1:
-        await update.message.reply_text(
-            "Use: /planejar hoje, /planejar amanhã ou /planejar DD/MM."
-        )
-        return
-    try:
-        data_consulta = (
-            resolver_data_curta(context.args[0])
-            if context.args
-            else datetime.now(TZ).date()
-        )
-        await enviar_planejamento_diario(update, context, role, data_consulta)
-    except Exception as erro:
-        LOGGER.exception("Falha ao montar planejamento diário")
-        await update.message.reply_text(
-            mensagem_erro_usuario("montar o planejamento", erro)
-        )
+    await preference_handlers.plan_day(_runtime_module(), update, context)
 
 
 async def salvar_rotina_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    entrada = " ".join(context.args)
-    if "|" not in entrada:
-        await update.message.reply_text("Use: /salvar_rotina NOME | DATA")
-        return
-    nome, data_texto = (parte.strip() for parte in entrada.split("|", 1))
-    try:
-        if not nome or len(nome) > 60:
-            raise ValueError("o nome da rotina deve ter entre 1 e 60 caracteres")
-        data_origem = resolver_data_curta(data_texto)
-        inicio = datetime.combine(data_origem, datetime.min.time(), tzinfo=TZ)
-        eventos = await asyncio.to_thread(buscar_eventos, inicio, inicio + timedelta(days=1))
-        eventos = [
-            evento for evento in eventos
-            if responsavel_do_evento(evento) in {role, "Ambos"}
-            and inicio_do_evento(evento) and fim_do_evento(evento)
-        ]
-        if not eventos:
-            raise ValueError("não encontrei eventos com horário nessa data")
-        if len(eventos) > 30:
-            raise ValueError("uma rotina pode conter no máximo 30 eventos")
-        modelo = []
-        for evento in eventos:
-            comeco = inicio_do_evento(evento)
-            termino = fim_do_evento(evento)
-            modelo.append(
-                {
-                    "titulo": evento.get("summary", "Sem título"),
-                    "hora": comeco.strftime("%H:%M"),
-                    "duracao": int((termino - comeco).total_seconds() // 60),
-                    "responsavel": responsavel_do_evento(evento),
-                }
-            )
-        salvar_rotina(role, nome, modelo)
-        await update.message.reply_text(f"✅ Rotina “{nome}” salva com {len(modelo)} eventos.")
-    except Exception as erro:
-        await update.message.reply_text(mensagem_erro_usuario("salvar a rotina", erro))
+    await preference_handlers.save_routine(_runtime_module(), update, context)
 
 
 async def aplicar_rotina_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    entrada = " ".join(context.args)
-    if "|" not in entrada:
-        await update.message.reply_text("Use: /aplicar_rotina NOME | DATA")
-        return
-    nome, data_texto = (parte.strip() for parte in entrada.split("|", 1))
-    try:
-        if not nome:
-            raise ValueError("informe o nome da rotina")
-        modelo = obter_rotina(role, nome)
-        if not modelo:
-            raise ValueError(f"a rotina “{nome}” não existe")
-        destino = resolver_data_curta(data_texto)
-        eventos = []
-        for item in modelo:
-            inicio = datetime.combine(
-                destino, datetime.strptime(item["hora"], "%H:%M").time(), tzinfo=TZ
-            )
-            eventos.append(
-                {
-                    "titulo": item["titulo"],
-                    "inicio": inicio,
-                    "fim": inicio + timedelta(minutes=item["duracao"]),
-                    "responsavel": item["responsavel"],
-                    "recorrencia": "nenhuma",
-                }
-            )
-        conflitos = await asyncio.to_thread(conflitos_da_replicacao, eventos)
-        await mostrar_confirmacao_criacao(
-            update, context, eventos, f"Confira a rotina “{nome}”:", conflitos
-        )
-    except Exception as erro:
-        await update.message.reply_text(mensagem_erro_usuario("aplicar a rotina", erro))
+    await preference_handlers.apply_routine(_runtime_module(), update, context)
 
 
 async def rotinas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    nomes = listar_rotinas(role)
-    await update.message.reply_text(
-        "📋 Rotinas salvas:\n" + ("\n".join(f"• {nome}" for nome in nomes) if nomes else "Nenhuma.")
-    )
+    await preference_handlers.list_routines(_runtime_module(), update, context)
 
 
 async def resumo_diario_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if not context.args:
-        manha = obter_configuracao(role, "resumo_diario", "desligado")
-        noite = obter_configuracao(role, "resumo_noturno", "desligado")
-        await update.message.reply_text(
-            f"Resumo da manhã: {manha}\nResumo da noite: {noite}\n\n"
-            "Use /resumo_diario 06:00 20:30 ou /resumo_diario desligar."
-        )
-        return
-    if len(context.args) == 1 and context.args[0].casefold() in {
-        "desligar",
-        "desligado",
-        "off",
-    }:
-        salvar_configuracao(role, "resumo_diario", "desligado")
-        salvar_configuracao(role, "resumo_noturno", "desligado")
-        await update.message.reply_text("✅ Resumos proativos desligados.")
-        return
-    if len(context.args) not in {1, 2}:
-        await update.message.reply_text(
-            "Use /resumo_diario 06:00 20:30 ou /resumo_diario desligar."
-        )
-        return
-    try:
-        for valor in context.args:
-            datetime.strptime(valor, "%H:%M")
-    except ValueError:
-        await update.message.reply_text(
-            "Use horários HH:MM, por exemplo: /resumo_diario 06:00 20:30."
-        )
-        return
-    manha = context.args[0]
-    noite = context.args[1] if len(context.args) == 2 else "desligado"
-    salvar_configuracao(role, "resumo_diario", manha)
-    salvar_configuracao(role, "resumo_noturno", noite)
-    mensagem = f"✅ Resumo da manhã programado para {manha}."
-    if noite != "desligado":
-        mensagem += f"\n✅ Prévia da noite programada para {noite}."
-    await update.message.reply_text(mensagem)
+    await preference_handlers.configure_daily_summary(
+        _runtime_module(), update, context
+    )
 
 
 async def lembretes_cmd(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    role = role_do_usuario(update.effective_user.id)
-    if not role:
-        await update.message.reply_text("Telegram não autorizado. Envie /start.")
-        return
-    if not context.args:
-        configuracao = configuracao_lembretes(role)
-        estado = "ligados" if configuracao["ativo"] else "desligados"
-        await update.message.reply_text(
-            f"🔔 Lembretes de {role}: {estado}\n"
-            f"Normal: {configuracao['normal']} min antes\n"
-            f"Preparação: {configuracao['preparo']} min antes\n"
-            f"Com localização: {configuracao['deslocamento']} min antes\n\n"
-            "Ajuste com /lembretes normal 30, /lembretes preparo 60 ou "
-            "/lembretes deslocamento 45."
-        )
-        return
-    if len(context.args) == 1 and context.args[0].casefold() in {
-        "ligar",
-        "ligado",
-        "on",
-        "desligar",
-        "desligado",
-        "off",
-    }:
-        ligar = context.args[0].casefold() in {"ligar", "ligado", "on"}
-        salvar_configuracao(role, "lembretes_ativos", "sim" if ligar else "nao")
-        await update.message.reply_text(
-            f"✅ Lembretes {'ligados' if ligar else 'desligados'} para {role}."
-        )
-        return
-    aliases = {
-        "normal": "normal",
-        "preparo": "preparo",
-        "preparacao": "preparo",
-        "preparação": "preparo",
-        "deslocamento": "deslocamento",
-        "saida": "deslocamento",
-        "saída": "deslocamento",
-    }
-    tipo = aliases.get(context.args[0].casefold()) if context.args else None
-    if (
-        len(context.args) != 2
-        or not tipo
-        or not context.args[1].isdigit()
-    ):
-        await update.message.reply_text(
-            "Use: /lembretes normal 30, /lembretes preparo 60, "
-            "/lembretes deslocamento 45 ou /lembretes desligar."
-        )
-        return
-    minutos = int(context.args[1])
-    if minutos < 5 or minutos > 180:
-        await update.message.reply_text(
-            "A antecedência deve ficar entre 5 e 180 minutos."
-        )
-        return
-    salvar_configuracao(role, REMINDER_SETTING_KEYS[tipo], str(minutos))
-    nomes = {
-        "normal": "normal",
-        "preparo": "de preparação",
-        "deslocamento": "com localização",
-    }
-    await update.message.reply_text(
-        f"✅ Lembrete {nomes[tipo]} ajustado para {minutos} minutos antes."
-    )
+    await preference_handlers.configure_reminders(_runtime_module(), update, context)
 
 
 async def desfazer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3311,238 +2410,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def verificar_lembretes(context: ContextTypes.DEFAULT_TYPE) -> None:
-    global LAST_REMINDER_CHECK, LAST_REMINDER_ERROR
-    try:
-        agora = datetime.now(TZ)
-        with conectar_banco() as conexao:
-            usuarios = conexao.execute(
-                "SELECT role, chat_id FROM usuarios"
-            ).fetchall()
-            configuracoes_salvas = conexao.execute(
-                """
-                SELECT role, chave, valor FROM configuracoes
-                WHERE chave IN (
-                    'lembretes_ativos',
-                    'lembrete_normal_minutos',
-                    'lembrete_preparo_minutos',
-                    'lembrete_deslocamento_minutos'
-                )
-                """
-            ).fetchall()
-        valores_por_role = {}
-        for item in configuracoes_salvas:
-            valores_por_role.setdefault(item["role"], {})[item["chave"]] = item[
-                "valor"
-            ]
-        configuracoes = {
-            usuario["role"]: configuracao_lembretes(
-                usuario["role"], valores_por_role.get(usuario["role"], {})
-            )
-            for usuario in usuarios
-        }
-        usuarios_ativos = {
-            usuario["role"]: usuario
-            for usuario in usuarios
-            if configuracoes[usuario["role"]]["ativo"]
-        }
-        if not usuarios_ativos:
-            limpar_notificacoes_antigas()
-            LAST_REMINDER_ERROR = None
-            return
-
-        maior_antecedencia = max(
-            max(
-                configuracao["normal"],
-                configuracao["preparo"],
-                configuracao["deslocamento"],
-            )
-            for role, configuracao in configuracoes.items()
-            if role in usuarios_ativos
-        )
-        fim_da_janela = agora + timedelta(minutes=maior_antecedencia)
-        eventos = buscar_eventos(agora, fim_da_janela)
-
-        for evento in eventos:
-            inicio = inicio_do_evento(evento)
-            event_id = evento.get("id")
-            if not event_id or not inicio or inicio < agora:
-                continue
-            inicio_iso = inicio.isoformat()
-            responsavel = responsavel_do_evento(evento)
-            tipo = reminder_kind(evento)
-            segundos = max(0, int((inicio - agora).total_seconds()))
-            minutos = max(1, (segundos + 59) // 60)
-            roles = (
-                ("Matheus", "Letícia")
-                if responsavel == "Ambos"
-                else (responsavel,)
-            )
-
-            for role in roles:
-                usuario = usuarios_ativos.get(role)
-                if not usuario:
-                    continue
-                antecedencia = configuracoes[role][tipo]
-                if segundos > antecedencia * 60:
-                    continue
-                chat_id = usuario["chat_id"]
-                if notificacao_enviada(event_id, inicio_iso, chat_id):
-                    continue
-                titulo = evento.get("summary", "Sem título")[:120]
-                mensagem = (
-                    f"{reminder_heading(tipo)}: começa em {minutos} min\n"
-                    f"📅 {titulo}\n"
-                    f"🕒 {inicio.strftime('%d/%m às %H:%M')}\n"
-                    f"👤 {responsavel}"
-                )
-                local = evento.get("location", "").strip()
-                if local:
-                    mensagem += f"\n📍 {local[:160]}"
-                token = secrets.token_hex(4)
-                pendentes = context.application.bot_data.setdefault(
-                    "lembretes_interativos", {}
-                )
-                pendentes[token] = {"chat_id": chat_id, "mensagem": mensagem}
-                while len(pendentes) > 100:
-                    pendentes.pop(next(iter(pendentes)))
-                botoes = [
-                    [
-                        InlineKeyboardButton("✅ Ciente", callback_data=f"la:{token}"),
-                        InlineKeyboardButton(
-                            "⏰ +10 min", callback_data=f"lr:{token}"
-                        ),
-                    ]
-                ]
-                if evento.get("htmlLink"):
-                    botoes.append(
-                        [
-                            InlineKeyboardButton(
-                                "Abrir no Google Agenda", url=evento["htmlLink"]
-                            )
-                        ]
-                    )
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=mensagem,
-                    reply_markup=InlineKeyboardMarkup(botoes),
-                )
-                marcar_notificacao_enviada(
-                    event_id, inicio_iso, chat_id, antecedencia
-                )
-
-        limpar_notificacoes_antigas()
-        LAST_REMINDER_ERROR = None
-    except Exception as erro:
-        LAST_REMINDER_ERROR = str(erro)
-        LOGGER.exception("Falha ao verificar lembretes")
-    finally:
-        LAST_REMINDER_CHECK = datetime.now(TZ)
+    await reminder_jobs.check_event_reminders(_runtime_module(), context)
 
 
 async def enviar_lembrete_adiado(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await context.bot.send_message(
-        chat_id=context.job.data["chat_id"],
-        text="⏰ Lembrete adiado:\n" + context.job.data["mensagem"],
-    )
+    await reminder_jobs.send_snoozed_reminder(context)
 
 
 async def callback_lembrete(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    query = update.callback_query
-    if not role_do_usuario(query.from_user.id):
-        await query.answer("Telegram não autorizado.", show_alert=True)
-        return
-    acao, token = query.data.split(":", 1)
-    pendentes = context.application.bot_data.get("lembretes_interativos", {})
-    dados = pendentes.pop(token, None)
-    if not dados:
-        await query.answer("Este lembrete expirou.", show_alert=True)
-        return
-    await query.answer()
-    if acao == "lr":
-        context.job_queue.run_once(
-            enviar_lembrete_adiado,
-            when=timedelta(minutes=10),
-            data=dados,
-            name=f"lembrete-adiado-{token}",
-        )
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text("👍 Vou lembrar novamente em 10 minutos.")
-    else:
-        await query.edit_message_reply_markup(reply_markup=None)
+    await reminder_jobs.reminder_callback(_runtime_module(), update, context)
 
 
 async def verificar_resumos_diarios(context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        agora = datetime.now(TZ)
-        with conectar_banco() as conexao:
-            usuarios = conexao.execute(
-                "SELECT role, chat_id FROM usuarios"
-            ).fetchall()
-        agendados = []
-        for usuario in usuarios:
-            role = usuario["role"]
-            for tipo, chave in (
-                ("manha", "resumo_diario"),
-                ("noite", "resumo_noturno"),
-            ):
-                horario = obter_configuracao(role, chave, "desligado")
-                if horario != agora.strftime("%H:%M"):
-                    continue
-                if resumo_proativo_enviado(role, agora.date(), tipo):
-                    continue
-                agendados.append((usuario, tipo))
-
-        eventos_por_data = {}
-        for usuario, tipo in agendados:
-            role = usuario["role"]
-            data_consulta = (
-                agora.date() if tipo == "manha" else agora.date() + timedelta(days=1)
-            )
-            try:
-                if data_consulta not in eventos_por_data:
-                    inicio = datetime.combine(
-                        data_consulta, datetime.min.time(), tzinfo=TZ
-                    )
-                    eventos_por_data[data_consulta] = await asyncio.to_thread(
-                        buscar_eventos, inicio, inicio + timedelta(days=1)
-                    )
-                mensagem = await asyncio.to_thread(
-                    montar_resumo_proativo,
-                    role,
-                    tipo,
-                    agora,
-                    eventos_por_data[data_consulta],
-                )
-                if mensagem:
-                    await context.bot.send_message(
-                        chat_id=usuario["chat_id"], text=mensagem
-                    )
-                marcar_resumo_proativo_enviado(role, agora.date(), tipo)
-            except Exception:
-                LOGGER.exception("Falha no resumo %s de %s", tipo, role)
-        if agendados:
-            limpar_resumos_proativos_antigos()
-    except Exception:
-        LOGGER.exception("Falha ao enviar resumo diário")
+    await reminder_jobs.check_daily_summaries(_runtime_module(), context)
 
 
 async def configurar_jobs(application: Application) -> None:
-    if application.job_queue is None:
-        raise RuntimeError('Instale a dependência "python-telegram-bot[job-queue]"')
-    application.job_queue.run_repeating(
-        verificar_lembretes,
-        interval=REMINDER_CHECK_SECONDS,
-        first=5,
-        name="lembretes-agenda",
-    )
-    application.job_queue.run_repeating(
-        verificar_resumos_diarios,
-        interval=60,
-        first=10,
-        name="resumos-diarios",
-    )
+    await reminder_jobs.configure_jobs(_runtime_module(), application)
 
 
 def main() -> None:
