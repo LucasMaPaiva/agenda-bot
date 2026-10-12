@@ -134,6 +134,8 @@ from agenda_bot.settings import (
 LAST_REMINDER_CHECK: Optional[datetime] = None
 LAST_REMINDER_ERROR: Optional[str] = None
 LOGGER = logging.getLogger(__name__)
+CRIACAO_INCOMPLETA_KEY = "criacao_evento_incompleta"
+CRIACAO_INCOMPLETA_TTL_SECONDS = 15 * 60
 
 gemini_client = (
     genai.Client(
@@ -822,11 +824,16 @@ Intenções possíveis:
 - editar_evento: mudar data, horário, título ou responsável de evento.
 - replicar_eventos: copiar eventos que já existem em um dia para outro dia.
 - sugerir_horarios: encontrar horários livres para encaixar um compromisso.
+- esclarecer_evento: a mensagem parece descrever um evento a criar, mas falta uma
+  informação obrigatória ou não está claro se a pessoa quer adicioná-lo à agenda.
 - conversa: saudação, pergunta geral, conselho ou conversa sem operação solicitada.
 
 Regras:
 - Não transforme conversa casual em evento.
 - Só use criar_evento/criar_tarefa quando houver um pedido explícito para adicionar.
+- Nunca invente data, horário ou intenção de criação. Se a mensagem parecer uma descrição
+  de evento, mas faltar data ou horário, use esclarecer_evento. Exemplo: em
+  "academia das 18 às 19:30", falta a data, então use esclarecer_evento.
 - Uma afirmação como "vou ter uma reunião quinta" ou um pedido de conselho sobre onde
   encaixar algo é conversa, não criação.
 - Só use editar_evento ou cancelar_evento quando a alteração/exclusão for explícita.
@@ -846,6 +853,259 @@ Regras:
 Mensagem: {json.dumps(texto, ensure_ascii=False)}
 """
     return json.loads(gerar_json_intencao(prompt, INTENCAO_SCHEMA))
+
+
+def texto_tem_data_de_evento(texto: str) -> bool:
+    normalizado = texto_normalizado(texto)
+    return bool(
+        re.search(
+            r"\b(?:hoje|hj|amanha|depois\s+de\s+amanha|segunda(?:-feira)?|"
+            r"terca(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|"
+            r"sexta(?:-feira)?|sabado|domingo)\b|"
+            r"\b(?:dia\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|"
+            r"\bdia\s+\d{1,2}\b|"
+            r"\b\d{4}-\d{2}-\d{2}\b|"
+            r"\b(?:dia\s+)?\d{1,2}\s+de\s+(?:jan(?:eiro)?|fev(?:ereiro)?|"
+            r"mar(?:co)?|abr(?:il)?|mai(?:o)?|jun(?:ho)?|jul(?:ho)?|"
+            r"ago(?:sto)?|set(?:embro)?|out(?:ubro)?|nov(?:embro)?|"
+            r"dez(?:embro)?)\b",
+            normalizado,
+        )
+    )
+
+
+def texto_tem_horario_de_evento(texto: str) -> bool:
+    normalizado = texto_normalizado(texto)
+    return bool(
+        re.search(
+            r"\b(?:as|das?|entre)\s+(?:[01]?\d|2[0-3])"
+            r"(?:(?::|h)[0-5]\d|h)?\b|"
+            r"\b(?:[01]?\d|2[0-3])(?:(?::|h)[0-5]\d|h)\b",
+            normalizado,
+        )
+    )
+
+
+def texto_tem_titulo_de_evento(texto: str) -> bool:
+    palavras_ignoradas = {
+        "a",
+        "agenda",
+        "agendar",
+        "agende",
+        "agosto",
+        "amanha",
+        "ambos",
+        "abril",
+        "as",
+        "ate",
+        "coloca",
+        "colocar",
+        "compromisso",
+        "cria",
+        "criar",
+        "crie",
+        "da",
+        "das",
+        "de",
+        "dezembro",
+        "depois",
+        "dia",
+        "dias",
+        "domingo",
+        "e",
+        "evento",
+        "feira",
+        "fevereiro",
+        "h",
+        "hoje",
+        "janeiro",
+        "julho",
+        "junho",
+        "leticia",
+        "maio",
+        "marca",
+        "marcar",
+        "marque",
+        "meu",
+        "minha",
+        "marco",
+        "matheus",
+        "na",
+        "no",
+        "o",
+        "para",
+        "pra",
+        "quarta",
+        "quinta",
+        "novembro",
+        "outubro",
+        "sabado",
+        "segunda",
+        "setembro",
+        "sexta",
+        "terca",
+        "todo",
+        "todos",
+        "um",
+        "uma",
+    }
+    palavras = re.findall(r"[a-z]+", texto_normalizado(texto))
+    return any(palavra not in palavras_ignoradas for palavra in palavras)
+
+
+def dados_faltantes_criacao_evento(texto: str) -> list[str]:
+    faltantes = []
+    if not texto_tem_titulo_de_evento(texto):
+        faltantes.append("titulo")
+    if not texto_tem_data_de_evento(texto):
+        faltantes.append("data")
+    if not texto_tem_horario_de_evento(texto):
+        faltantes.append("horario")
+    return faltantes
+
+
+def pergunta_dados_faltantes_evento(faltantes: list[str]) -> str:
+    if faltantes == ["titulo"]:
+        return "Qual compromisso?"
+    if faltantes == ["data"]:
+        return "Pra quando?"
+    if faltantes == ["horario"]:
+        return "Que horas?"
+    perguntas = []
+    if "titulo" in faltantes:
+        perguntas.append("qual compromisso")
+    if "data" in faltantes:
+        perguntas.append("pra quando")
+    if "horario" in faltantes:
+        perguntas.append("que horas")
+    return f"{', '.join(perguntas[:-1]).capitalize()} e {perguntas[-1]}?"
+
+
+def parece_descricao_de_evento_incompleta(texto: str) -> bool:
+    """Reconhece descrições como "academia das 18 às 19:30", sem data."""
+    normalizado = texto_normalizado(texto)
+    if texto_tem_data_de_evento(texto) or not texto_tem_horario_de_evento(texto):
+        return False
+    if (
+        eh_consulta_agenda(texto)
+        or eh_pedido_cancelamento(texto)
+        or eh_pedido_edicao(texto)
+        or eh_pedido_criacao_tarefa(texto)
+        or eh_pedido_lembrete_avulso(texto)
+    ):
+        return False
+    tem_intervalo = re.search(
+        r"\b(?:das?|entre)\s+(?:[01]?\d|2[0-3])"
+        r"(?:(?::|h)[0-5]\d|h)?\s+(?:as|a|e|ate)\s+"
+        r"(?:[01]?\d|2[0-3])(?:(?::|h)[0-5]\d|h)?\b",
+        normalizado,
+    )
+    return bool(tem_intervalo and re.search(r"[a-z]", normalizado))
+
+
+async def pedir_dados_para_criacao(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+    *,
+    confirmar_intencao: bool = False,
+) -> None:
+    faltantes = dados_faltantes_criacao_evento(texto)
+    context.user_data[CRIACAO_INCOMPLETA_KEY] = {
+        "texto": texto,
+        "faltantes": faltantes,
+        "confirmar_intencao": confirmar_intencao and not faltantes,
+        "criado_em": datetime.now(TZ).timestamp(),
+    }
+    if faltantes:
+        pergunta = pergunta_dados_faltantes_evento(faltantes)
+    else:
+        pergunta = "Você quer que eu crie esse evento na agenda?"
+    await update.message.reply_text(pergunta)
+
+
+async def continuar_criacao_incompleta(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+) -> bool:
+    pendente = context.user_data.get(CRIACAO_INCOMPLETA_KEY)
+    if not pendente:
+        return False
+    if (
+        datetime.now(TZ).timestamp() - pendente.get("criado_em", 0)
+        > CRIACAO_INCOMPLETA_TTL_SECONDS
+    ):
+        context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+        return False
+
+    resposta = texto_normalizado(texto).strip()
+    if resposta in {"cancela", "cancelar", "nao", "não", "deixa", "deixa pra la"}:
+        context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+        await update.message.reply_text("Tudo bem, não vou criar o evento.")
+        return True
+    palavras = set(re.findall(r"[a-z0-9]+", resposta))
+    consulta_explicita = eh_consulta_de_compromisso_especifico(texto) or bool(
+        palavras
+        & {
+            "agenda",
+            "compromisso",
+            "compromissos",
+            "evento",
+            "eventos",
+            "tenho",
+            "temos",
+        }
+    )
+    if (
+        consulta_explicita
+        or eh_pedido_cancelamento(texto)
+        or eh_pedido_edicao(texto)
+        or eh_pedido_criacao_evento(texto)
+        or eh_pedido_criacao_tarefa(texto)
+        or eh_pedido_lembrete_avulso(texto)
+        or eh_pedido_replicacao(texto)
+        or pedido_horarios_livres(texto)
+        or pedido_planejamento_diario(texto)
+    ):
+        context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+        return False
+
+    if pendente.get("confirmar_intencao"):
+        if resposta not in {"sim", "pode", "quero", "cria", "criar", "confirma"}:
+            context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+            return False
+        combinado = pendente["texto"]
+    else:
+        faltantes_anteriores = set(pendente.get("faltantes", []))
+        forneceu_dado = (
+            "titulo" in faltantes_anteriores
+            and texto_tem_titulo_de_evento(texto)
+        ) or (
+            "data" in faltantes_anteriores and texto_tem_data_de_evento(texto)
+        ) or (
+            "horario" in faltantes_anteriores
+            and texto_tem_horario_de_evento(texto)
+        )
+        if not forneceu_dado:
+            context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+            return False
+        combinado = f"{pendente['texto']}. Complemento: {texto}"
+        faltantes = dados_faltantes_criacao_evento(combinado)
+        if faltantes:
+            pendente.update(
+                texto=combinado,
+                faltantes=faltantes,
+                criado_em=datetime.now(TZ).timestamp(),
+            )
+            await update.message.reply_text(
+                pergunta_dados_faltantes_evento(faltantes)
+            )
+            return True
+
+    context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
+    await iniciar_criacao(update, context, combinado)
+    return True
 
 
 def intervalo_da_intencao(dados: dict) -> tuple[datetime, datetime, str]:
@@ -2294,10 +2554,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             _runtime_module(), update, context, role, texto
         ):
             return
+        if await continuar_criacao_incompleta(update, context, texto):
+            return
         if eh_pedido_lembrete_avulso(texto):
             await personal_reminder_handlers.begin(
                 _runtime_module(), update, context, role, texto
             )
+            return
+
+        if parece_descricao_de_evento_incompleta(texto):
+            await pedir_dados_para_criacao(update, context, texto)
+            return
+        if eh_pedido_criacao_evento(texto) and dados_faltantes_criacao_evento(
+            texto
+        ):
+            await pedir_dados_para_criacao(update, context, texto)
             return
 
         normalizado = texto_normalizado(texto)
@@ -2402,7 +2673,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         dados = await asyncio.to_thread(classificar_intencao, texto)
         intencao = dados["intencao"]
         if intencao == "criar_evento":
-            await iniciar_criacao(update, context, texto)
+            faltantes = dados_faltantes_criacao_evento(texto)
+            if faltantes:
+                await pedir_dados_para_criacao(update, context, texto)
+            else:
+                await iniciar_criacao(update, context, texto)
+        elif intencao == "esclarecer_evento":
+            await pedir_dados_para_criacao(
+                update,
+                context,
+                texto,
+                confirmar_intencao=True,
+            )
         elif intencao == "consultar_agenda":
             await responder_consulta(
                 update,

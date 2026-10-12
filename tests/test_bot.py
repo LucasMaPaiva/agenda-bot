@@ -855,6 +855,74 @@ class PersonalReminderFlowTest(unittest.TestCase):
         self.assertIn("75 minutos", mensagem.respostas[0][0])
 
 
+class EventClarificationFlowTest(unittest.TestCase):
+    def test_descricao_com_horario_sem_data_pergunta_quando(self):
+        async def executar():
+            contexto = SimpleNamespace(user_data={})
+            mensagem = MensagemFake()
+            iniciar = AsyncMock()
+
+            def update(texto):
+                return SimpleNamespace(
+                    message=SimpleNamespace(
+                        text=texto,
+                        reply_text=mensagem.reply_text,
+                    ),
+                    effective_user=SimpleNamespace(id=1),
+                )
+
+            with (
+                patch.object(bot, "role_do_usuario", return_value="Matheus"),
+                patch.object(bot, "iniciar_criacao", iniciar),
+            ):
+                await bot.handle_message(
+                    update("academia das 18 as 19:30"), contexto
+                )
+                self.assertEqual(mensagem.respostas[-1][0], "Pra quando?")
+                iniciar.assert_not_awaited()
+
+                await bot.handle_message(update("amanhã"), contexto)
+
+            iniciar.assert_awaited_once()
+            texto_completo = iniciar.await_args.args[2]
+            self.assertIn("academia das 18 as 19:30", texto_completo)
+            self.assertIn("amanhã", texto_completo)
+            self.assertNotIn(bot.CRIACAO_INCOMPLETA_KEY, contexto.user_data)
+
+        asyncio.run(executar())
+
+    def test_pedido_explicito_sem_horario_pergunta_que_horas(self):
+        async def executar():
+            contexto = SimpleNamespace(user_data={})
+            mensagem = MensagemFake()
+            update = SimpleNamespace(
+                message=SimpleNamespace(
+                    text="marque academia amanhã",
+                    reply_text=mensagem.reply_text,
+                ),
+                effective_user=SimpleNamespace(id=1),
+            )
+            with (
+                patch.object(bot, "role_do_usuario", return_value="Matheus"),
+                patch.object(bot, "iniciar_criacao", AsyncMock()) as iniciar,
+            ):
+                await bot.handle_message(update, contexto)
+            self.assertEqual(mensagem.respostas[-1][0], "Que horas?")
+            iniciar.assert_not_awaited()
+
+        asyncio.run(executar())
+
+    def test_pedido_sem_titulo_pergunta_qual_compromisso(self):
+        self.assertEqual(
+            bot.dados_faltantes_criacao_evento("marque amanhã às 18h"),
+            ["titulo"],
+        )
+        self.assertEqual(
+            bot.pergunta_dados_faltantes_evento(["titulo"]),
+            "Qual compromisso?",
+        )
+
+
 class MensagemFake:
     def __init__(self):
         self.respostas = []

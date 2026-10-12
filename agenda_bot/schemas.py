@@ -164,6 +164,7 @@ INTENCAO_SCHEMA = {
                 "editar_evento",
                 "replicar_eventos",
                 "sugerir_horarios",
+                "esclarecer_evento",
                 "conversa",
             ],
         },
