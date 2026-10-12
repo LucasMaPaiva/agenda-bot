@@ -469,8 +469,10 @@ def gerar_conversa_llm(mensagens: list[dict]) -> str:
     return resposta.text.strip()
 
 
-def extrair_eventos(texto: str) -> list[dict]:
+def extrair_eventos(texto: str, role: Optional[str] = None) -> list[dict]:
     agora = datetime.now(TZ)
+    responsavel_resolvido = responsavel_mencionado_no_texto(texto, role)
+    texto = texto_com_responsavel_resolvido(texto, role)
     prompt = f"""Você extrai dados de eventos de agenda a partir de mensagens em português do Brasil.
 Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}), dia da semana: {agora.strftime('%A')}.
 
@@ -487,11 +489,14 @@ Regras:
   use -1 para "último". Nas demais recorrências, use null em "ordem_mes".
 - Sem recorrência, use recorrencia="nenhuma" e uma lista vazia em "dias_semana".
 - Se não der pra saber a hora de término, use null.
-- Se não especificar responsável, use "Ambos".
+- Use como responsável a pessoa indicada na mensagem. Se houver "Responsável resolvido",
+  esse valor tem prioridade. Se não especificar responsável, use "Ambos".
 
 Mensagem: "{texto}"
 """
     dados = json.loads(gerar_json_operacao(prompt))
+    if responsavel_resolvido:
+        dados["responsavel"] = responsavel_resolvido
 
     primeira_data = date.fromisoformat(dados["data"])
     ultima_data = date.fromisoformat(dados["data_fim"]) if dados.get("data_fim") else primeira_data
@@ -627,9 +632,17 @@ Mensagem: "{texto}"
 
 
 def extrair_edicao(
-    texto: str, referencia: Optional[dict] = None
+    texto: str,
+    referencia: Optional[dict] = None,
+    role: Optional[str] = None,
 ) -> tuple[Optional[str], datetime, datetime, dict]:
     agora = datetime.now(TZ)
+    responsavel_resolvido = responsavel_mencionado_no_texto(texto, role)
+    texto_modelo = texto
+    if responsavel_resolvido and not re.search(
+        r"\b(?:matheus|leticia|ambos)\b", texto_normalizado(texto)
+    ):
+        texto_modelo += f". Novo responsável resolvido: {responsavel_resolvido}"
     prompt = f"""Você extrai critérios para localizar e editar um evento no Google Agenda.
 Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
 
@@ -640,12 +653,17 @@ Regras:
 - Em "mude a academia de amanhã para 18h30", data é amanhã, nova_hora_inicio é
   18:30 e nova_data é null.
 - Em "adie o culto de quarta para sexta", data é quarta e nova_data é sexta.
+- Se houver "Novo responsável resolvido", use esse valor em novo_responsavel.
 - Resolva datas relativas usando a data atual acima.
 - Use null em todo campo que o usuário não pediu para alterar.
 
-Mensagem: "{texto}"
+Mensagem: "{texto_modelo}"
 """
     dados = json.loads(gerar_json_operacao(prompt, EDICAO_SCHEMA))
+    if responsavel_resolvido and not re.search(
+        r"\b(?:matheus|leticia|ambos)\b", texto_normalizado(texto)
+    ):
+        dados["novo_responsavel"] = responsavel_resolvido
     if referencia:
         dados["termo"] = referencia.get("titulo")
         if referencia.get("inicio"):
@@ -928,10 +946,12 @@ def texto_tem_titulo_de_evento(texto: str) -> bool:
         "marque",
         "meu",
         "minha",
+        "mim",
         "marco",
         "matheus",
         "na",
         "no",
+        "nos",
         "o",
         "para",
         "pra",
@@ -943,6 +963,7 @@ def texto_tem_titulo_de_evento(texto: str) -> bool:
         "segunda",
         "setembro",
         "sexta",
+        "so",
         "terca",
         "todo",
         "todos",
@@ -953,7 +974,47 @@ def texto_tem_titulo_de_evento(texto: str) -> bool:
     return any(palavra not in palavras_ignoradas for palavra in palavras)
 
 
-def dados_faltantes_criacao_evento(texto: str) -> list[str]:
+def responsavel_mencionado_no_texto(
+    texto: str, role: Optional[str] = None
+) -> Optional[str]:
+    normalizado = texto_normalizado(texto).strip()
+    tem_matheus = bool(re.search(r"\bmatheus\b", normalizado))
+    tem_leticia = bool(re.search(r"\bleticia\b", normalizado))
+    if tem_matheus and tem_leticia:
+        return "Ambos"
+    if tem_matheus:
+        return "Matheus"
+    if tem_leticia:
+        return "Letícia"
+    if re.search(
+        r"\b(?:ambos|nos dois|para nos|pra nos|pra gente|para a gente)\b",
+        normalizado,
+    ):
+        return "Ambos"
+    if normalizado in {"eu", "mim", "so eu", "só eu"} or re.search(
+        r"\b(?:so\s+)?(?:para|pra)\s+mim\b", normalizado
+    ):
+        return role
+    if re.search(r"\b(?:so\s+)?(?:para|pra)\s+ela\b", normalizado):
+        return "Letícia"
+    if re.search(r"\b(?:so\s+)?(?:para|pra)\s+ele\b", normalizado):
+        return "Matheus"
+    return None
+
+
+def texto_com_responsavel_resolvido(texto: str, role: Optional[str]) -> str:
+    normalizado = texto_normalizado(texto)
+    if re.search(r"\b(?:matheus|leticia|ambos)\b", normalizado):
+        return texto
+    responsavel = responsavel_mencionado_no_texto(texto, role)
+    if not responsavel:
+        return texto
+    return f"{texto}. Responsável resolvido: {responsavel}"
+
+
+def dados_faltantes_criacao_evento(
+    texto: str, role: Optional[str] = None
+) -> list[str]:
     faltantes = []
     if not texto_tem_titulo_de_evento(texto):
         faltantes.append("titulo")
@@ -961,22 +1022,27 @@ def dados_faltantes_criacao_evento(texto: str) -> list[str]:
         faltantes.append("data")
     if not texto_tem_horario_de_evento(texto):
         faltantes.append("horario")
+    if not responsavel_mencionado_no_texto(texto, role):
+        faltantes.append("responsavel")
     return faltantes
 
 
 def pergunta_dados_faltantes_evento(faltantes: list[str]) -> str:
-    if faltantes == ["titulo"]:
+    dados_do_evento = [item for item in faltantes if item != "responsavel"]
+    if not dados_do_evento:
+        return "Para quem: Matheus, Letícia ou ambos?"
+    if dados_do_evento == ["titulo"]:
         return "Qual compromisso?"
-    if faltantes == ["data"]:
+    if dados_do_evento == ["data"]:
         return "Pra quando?"
-    if faltantes == ["horario"]:
+    if dados_do_evento == ["horario"]:
         return "Que horas?"
     perguntas = []
-    if "titulo" in faltantes:
+    if "titulo" in dados_do_evento:
         perguntas.append("qual compromisso")
-    if "data" in faltantes:
+    if "data" in dados_do_evento:
         perguntas.append("pra quando")
-    if "horario" in faltantes:
+    if "horario" in dados_do_evento:
         perguntas.append("que horas")
     return f"{', '.join(perguntas[:-1]).capitalize()} e {perguntas[-1]}?"
 
@@ -1008,9 +1074,10 @@ async def pedir_dados_para_criacao(
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
     *,
+    role: Optional[str] = None,
     confirmar_intencao: bool = False,
 ) -> None:
-    faltantes = dados_faltantes_criacao_evento(texto)
+    faltantes = dados_faltantes_criacao_evento(texto, role)
     context.user_data[CRIACAO_INCOMPLETA_KEY] = {
         "texto": texto,
         "faltantes": faltantes,
@@ -1028,6 +1095,7 @@ async def continuar_criacao_incompleta(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
+    role: str,
 ) -> bool:
     pendente = context.user_data.get(CRIACAO_INCOMPLETA_KEY)
     if not pendente:
@@ -1086,12 +1154,15 @@ async def continuar_criacao_incompleta(
         ) or (
             "horario" in faltantes_anteriores
             and texto_tem_horario_de_evento(texto)
+        ) or (
+            "responsavel" in faltantes_anteriores
+            and responsavel_mencionado_no_texto(texto, role) is not None
         )
         if not forneceu_dado:
             context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
             return False
         combinado = f"{pendente['texto']}. Complemento: {texto}"
-        faltantes = dados_faltantes_criacao_evento(combinado)
+        faltantes = dados_faltantes_criacao_evento(combinado, role)
         if faltantes:
             pendente.update(
                 texto=combinado,
@@ -1104,7 +1175,7 @@ async def continuar_criacao_incompleta(
             return True
 
     context.user_data.pop(CRIACAO_INCOMPLETA_KEY, None)
-    await iniciar_criacao(update, context, combinado)
+    await iniciar_criacao(update, context, combinado, role)
     return True
 
 
@@ -1729,9 +1800,12 @@ async def mostrar_confirmacao_criacao(
 
 
 async def iniciar_criacao(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+    role: Optional[str] = None,
 ) -> None:
-    eventos = await asyncio.to_thread(extrair_eventos, texto)
+    eventos = await asyncio.to_thread(extrair_eventos, texto, role)
     conflitos = await asyncio.to_thread(conflitos_da_replicacao, eventos)
     await mostrar_confirmacao_criacao(update, context, eventos, avisos=conflitos)
 
@@ -1877,9 +1951,10 @@ async def iniciar_edicao(
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
     referencia: Optional[dict] = None,
+    role: Optional[str] = None,
 ) -> None:
     termo, inicio, fim, alteracoes = await asyncio.to_thread(
-        extrair_edicao, texto, referencia
+        extrair_edicao, texto, referencia, role
     )
     eventos = await asyncio.to_thread(
         buscar_eventos_para_cancelar, termo, inicio, fim
@@ -2227,7 +2302,8 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def editar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not role_do_usuario(update.effective_user.id):
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
         await update.message.reply_text("Telegram não autorizado. Envie /start.")
         return
     if not context.args:
@@ -2237,7 +2313,7 @@ async def editar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     try:
-        await iniciar_edicao(update, context, " ".join(context.args))
+        await iniciar_edicao(update, context, " ".join(context.args), role=role)
     except Exception as erro:
         LOGGER.exception("Falha ao buscar evento para edição")
         await update.message.reply_text(
@@ -2554,7 +2630,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             _runtime_module(), update, context, role, texto
         ):
             return
-        if await continuar_criacao_incompleta(update, context, texto):
+        if await continuar_criacao_incompleta(update, context, texto, role):
             return
         if eh_pedido_lembrete_avulso(texto):
             await personal_reminder_handlers.begin(
@@ -2563,12 +2639,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if parece_descricao_de_evento_incompleta(texto):
-            await pedir_dados_para_criacao(update, context, texto)
+            await pedir_dados_para_criacao(update, context, texto, role=role)
             return
         if eh_pedido_criacao_evento(texto) and dados_faltantes_criacao_evento(
-            texto
+            texto, role
         ):
-            await pedir_dados_para_criacao(update, context, texto)
+            await pedir_dados_para_criacao(update, context, texto, role=role)
             return
 
         normalizado = texto_normalizado(texto)
@@ -2627,7 +2703,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if eh_pedido_edicao(texto):
             await iniciar_edicao(
-                update, context, texto, evento_referenciado(texto, role)
+                update,
+                context,
+                texto,
+                evento_referenciado(texto, role),
+                role,
             )
             return
 
@@ -2667,22 +2747,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if eh_pedido_criacao_evento(texto):
-            await iniciar_criacao(update, context, texto)
+            await iniciar_criacao(update, context, texto, role)
             return
 
         dados = await asyncio.to_thread(classificar_intencao, texto)
         intencao = dados["intencao"]
         if intencao == "criar_evento":
-            faltantes = dados_faltantes_criacao_evento(texto)
+            faltantes = dados_faltantes_criacao_evento(texto, role)
             if faltantes:
-                await pedir_dados_para_criacao(update, context, texto)
+                await pedir_dados_para_criacao(update, context, texto, role=role)
             else:
-                await iniciar_criacao(update, context, texto)
+                await iniciar_criacao(update, context, texto, role)
         elif intencao == "esclarecer_evento":
             await pedir_dados_para_criacao(
                 update,
                 context,
                 texto,
+                role=role,
                 confirmar_intencao=True,
             )
         elif intencao == "consultar_agenda":
@@ -2713,7 +2794,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         elif intencao == "editar_evento":
             await iniciar_edicao(
-                update, context, texto, evento_referenciado(texto, role)
+                update,
+                context,
+                texto,
+                evento_referenciado(texto, role),
+                role,
             )
         elif intencao == "replicar_eventos":
             await iniciar_replicacao(update, context, role, texto)

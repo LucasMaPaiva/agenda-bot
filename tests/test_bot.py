@@ -278,6 +278,25 @@ class AgendaLogicTest(unittest.TestCase):
         self.assertEqual(fim.date(), date(2026, 10, 9))
         self.assertEqual(alteracoes["nova_hora_inicio"], "20:00")
 
+    def test_edicao_so_pra_mim_resolve_usuario_do_telegram(self):
+        dados = {
+            "termo": "Academia",
+            "data": "2026-10-08",
+            "novo_titulo": None,
+            "nova_data": None,
+            "nova_hora_inicio": None,
+            "nova_hora_fim": None,
+            "novo_responsavel": None,
+        }
+        with patch.object(
+            bot, "gerar_json_operacao", return_value=json.dumps(dados)
+        ):
+            _, _, _, alteracoes = bot.extrair_edicao(
+                "mude a academia de amanhã só pra mim",
+                role="Letícia",
+            )
+        self.assertEqual(alteracoes["novo_responsavel"], "Letícia")
+
     def test_operacao_usa_modelo_local_se_gemini_estiver_indisponivel(self):
         dados = self.evento_base()
         with (
@@ -882,6 +901,13 @@ class EventClarificationFlowTest(unittest.TestCase):
                 iniciar.assert_not_awaited()
 
                 await bot.handle_message(update("amanhã"), contexto)
+                self.assertEqual(
+                    mensagem.respostas[-1][0],
+                    "Para quem: Matheus, Letícia ou ambos?",
+                )
+                iniciar.assert_not_awaited()
+
+                await bot.handle_message(update("Matheus"), contexto)
 
             iniciar.assert_awaited_once()
             texto_completo = iniciar.await_args.args[2]
@@ -915,12 +941,38 @@ class EventClarificationFlowTest(unittest.TestCase):
     def test_pedido_sem_titulo_pergunta_qual_compromisso(self):
         self.assertEqual(
             bot.dados_faltantes_criacao_evento("marque amanhã às 18h"),
-            ["titulo"],
+            ["titulo", "responsavel"],
         )
         self.assertEqual(
             bot.pergunta_dados_faltantes_evento(["titulo"]),
             "Qual compromisso?",
         )
+
+    def test_responsavel_faltando_e_so_pra_mim(self):
+        self.assertEqual(
+            bot.pergunta_dados_faltantes_evento(["responsavel"]),
+            "Para quem: Matheus, Letícia ou ambos?",
+        )
+        self.assertEqual(
+            bot.responsavel_mencionado_no_texto("só pra mim", "Matheus"),
+            "Matheus",
+        )
+        self.assertEqual(
+            bot.responsavel_mencionado_no_texto("só pra mim", "Letícia"),
+            "Letícia",
+        )
+
+        dados = {
+            **AgendaLogicTest().evento_base(),
+            "responsavel": "Ambos",
+        }
+        with patch.object(
+            bot, "gerar_json_operacao", return_value=json.dumps(dados)
+        ):
+            eventos = bot.extrair_eventos(
+                "academia amanhã às 18 só pra mim", "Matheus"
+            )
+        self.assertEqual(eventos[0]["responsavel"], "Matheus")
 
 
 class MensagemFake:
