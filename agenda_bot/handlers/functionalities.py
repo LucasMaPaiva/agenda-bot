@@ -16,6 +16,11 @@ FUNCTIONALITIES_MESSAGE = """🤖 O que posso fazer
 • Veja e atualize sua lista com /tarefas, /concluir, /editar_tarefa e /excluir_tarefa.
 • Tarefas podem ter prazo ou ficar sem prazo.
 
+💰 Finanças
+• Registre um gasto dizendo “comprei uma coca por 24,50”. A IA local escolhe uma das
+  suas categorias e só lança depois da sua confirmação.
+• Pergunte “quais contas tenho para pagar?”, “qual é meu saldo?” ou “quanto está a fatura?”.
+
 🔔 Lembretes
 • Avulso: “me lembra amanhã às 12 de comprar ração e encher o pneu”.
   Eu confirmo com você; dá para ajustar ou cancelar antes de salvar.

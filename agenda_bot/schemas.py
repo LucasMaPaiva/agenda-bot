@@ -126,6 +126,31 @@ TAREFA_SCHEMA = {
     "additionalProperties": False,
 }
 
+GASTO_FINANCEIRO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description": {
+            "type": "string",
+            "description": "Descrição curta do que foi comprado ou pago",
+        },
+        "amount": {
+            "type": "string",
+            "description": "Valor decimal positivo, sem símbolo de moeda",
+        },
+        "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Data do gasto no formato YYYY-MM-DD",
+        },
+        "category_id": {
+            "type": ["integer", "null"],
+            "description": "ID de uma das categorias fornecidas ou null",
+        },
+    },
+    "required": ["description", "amount", "date", "category_id"],
+    "additionalProperties": False,
+}
+
 REPLICACAO_SCHEMA = {
     "type": "object",
     "properties": {

@@ -1058,6 +1058,113 @@ class ConfirmationFlowTest(unittest.TestCase):
 
         asyncio.run(executar())
 
+
+class FinanceIntegrationTest(unittest.TestCase):
+    def test_reconhece_as_quatro_intencoes_financeiras(self):
+        self.assertEqual(
+            bot.intencao_financeira("comprei uma coca foi 24,50"),
+            "registrar_gasto",
+        )
+        self.assertEqual(
+            bot.intencao_financeira("o que eu tenho de conta pra pagar?"),
+            "consultar_contas",
+        )
+        self.assertEqual(
+            bot.intencao_financeira("qual é meu saldo?"), "consultar_saldo"
+        )
+        self.assertEqual(
+            bot.intencao_financeira("quanto está a fatura?"),
+            "consultar_fatura",
+        )
+        self.assertIsNone(bot.intencao_financeira("academia amanhã às 18h"))
+
+    def test_ia_so_pode_escolher_uma_categoria_recebida_da_api(self):
+        categorias = [
+            {"id": 4, "name": "Mercado"},
+            {"id": 8, "name": "Delivery"},
+        ]
+        interpretado = {
+            "description": "Coca-Cola",
+            "amount": "24,50",
+            "date": "2026-10-12",
+            "category_id": 4,
+        }
+        with (
+            patch.object(bot, "OLLAMA_ENABLED", True),
+            patch.object(
+                bot, "gerar_resposta_ollama", return_value=json.dumps(interpretado)
+            ) as modelo,
+        ):
+            gasto = bot.extrair_gasto_financeiro(
+                "comprei uma coca foi 24,50", categorias
+            )
+        self.assertEqual(gasto["category_id"], 4)
+        self.assertIn("Categorias válidas", modelo.call_args.args[0][1]["content"])
+
+        interpretado["category_id"] = 999
+        with (
+            patch.object(bot, "OLLAMA_ENABLED", True),
+            patch.object(
+                bot, "gerar_resposta_ollama", return_value=json.dumps(interpretado)
+            ),
+        ):
+            gasto = bot.extrair_gasto_financeiro("gastei 24,50", categorias)
+        self.assertIsNone(gasto["category_id"])
+
+    def test_gasto_so_e_enviado_a_api_depois_da_confirmacao(self):
+        async def imediato(funcao, *args, **kwargs):
+            return funcao(*args, **kwargs)
+
+        categorias = [{"id": 4, "name": "Mercado"}]
+        gasto = {
+            "description": "Coca-Cola",
+            "amount": "24,50",
+            "date": "2026-10-12",
+            "category_id": 4,
+        }
+        criado = {
+            **gasto,
+            "amount": {"cents": 2450, "formatted": "R$ 24,50"},
+            "category": {"id": 4, "name": "Mercado"},
+        }
+        gateway = MagicMock()
+        gateway.configured.return_value = True
+        gateway.categories.return_value = categorias
+        gateway.create_expense.return_value = criado
+        contexto = SimpleNamespace(user_data={})
+        mensagem = MensagemFake()
+        queries = []
+
+        async def executar():
+            with (
+                patch.object(bot.asyncio, "to_thread", side_effect=imediato),
+                patch.object(bot, "finance_gateway", gateway),
+                patch.object(bot, "extrair_gasto_financeiro", return_value=gasto),
+                patch.object(bot, "role_do_usuario", return_value="Matheus"),
+            ):
+                await bot.iniciar_gasto_financeiro(
+                    SimpleNamespace(message=mensagem),
+                    contexto,
+                    "Matheus",
+                    "comprei uma coca foi 24,50",
+                )
+                gateway.create_expense.assert_not_called()
+                token = next(
+                    iter(contexto.user_data["gastos_financeiros_pendentes"])
+                )
+                query = QueryFake(f"fc:{token}")
+                queries.append(query)
+                await bot.callback_financeiro(
+                    SimpleNamespace(callback_query=query), contexto
+                )
+
+        asyncio.run(executar())
+        gateway.create_expense.assert_called_once_with("Matheus", gasto)
+        self.assertIn("✅ Gasto lançado", queries[0].edicoes[0][0])
+        self.assertIn("R$ 24,50", queries[0].edicoes[0][0])
+
+
+class PlanningConfirmationFlowTest(unittest.TestCase):
     def test_planejamento_so_cria_blocos_depois_da_confirmacao(self):
         async def imediato(funcao, *args, **kwargs):
             return funcao(*args, **kwargs)

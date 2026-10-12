@@ -45,6 +45,14 @@ GOOGLE_TASKS_TOKEN_DIR = os.environ.get("GOOGLE_TASKS_TOKEN_DIR", "data")
 MATHEUS_REGISTRATION_CODE = os.environ.get("MATHEUS_REGISTRATION_CODE", "")
 LETICIA_REGISTRATION_CODE = os.environ.get("LETICIA_REGISTRATION_CODE", "")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "WARNING").upper()
+FINANCE_API_URL = os.environ.get("FINANCE_API_URL", "").rstrip("/")
+FINANCE_API_TIMEOUT_SECONDS = int(
+    os.environ.get("FINANCE_API_TIMEOUT_SECONDS", "10")
+)
+FINANCE_API_TOKENS = {
+    "Matheus": os.environ.get("FINANCE_API_TOKEN_MATHEUS", ""),
+    "Letícia": os.environ.get("FINANCE_API_TOKEN_LETICIA", ""),
+}
 
 TZ = ZoneInfo(TIMEZONE)
 STARTED_AT = datetime.now(TZ)

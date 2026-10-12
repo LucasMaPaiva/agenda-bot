@@ -2,7 +2,8 @@
 
 Bot que recebe mensagens em texto livre no Telegram e gerencia o Google Agenda
 compartilhado do Matheus e da Letícia, com integração opcional ao Google Tarefas
-individual de cada um e conversa local pelo Gemma 3 executado no Ollama.
+individual de cada um, consulta e lançamento no Finanças App e conversa local pelo
+Gemma 3 executado no Ollama.
 
 Além de criar eventos, o bot consulta compromissos de hoje, amanhã ou da semana e
 envia lembretes no Telegram. Somente os dois usuários cadastrados podem usar o bot.
@@ -34,6 +35,7 @@ Esse bot segue as mesmas regras definidas lá:
 - `agenda_bot/planning.py`: prioriza tarefas e distribui blocos livres sem chamar IA.
 - `agenda_bot/storage.py`: concentra a persistência SQLite.
 - `agenda_bot/google_tasks.py`: encapsula a integração com o Google Tarefas.
+- `agenda_bot/finance_gateway.py`: acessa a API financeira com um token individual.
 
 As funções públicas que já existiam em `bot.py` foram mantidas como fachadas para não
 quebrar os testes, comandos e scripts atuais.
@@ -70,6 +72,27 @@ horas. Tudo pode ser apagado com `/limpar_conversa`.
 O planejamento e os resumos proativos são determinísticos: consultam Google Agenda e
 Google Tarefas, mas não chamam Gemini nem Ollama. Assim, ativar essas automações não
 mantém o modelo local carregado nem aumenta a pressão de memória na VPS.
+
+### Finanças pelo Telegram
+
+O bot reconhece frases como “comprei uma coca foi 24,50”, busca as categorias reais da
+pessoa no Finanças App e usa somente o Ollama local para extrair descrição, valor, data
+e categoria. O lançamento só é enviado à API depois da confirmação. Também responde
+“o que tenho de conta para pagar?”, “qual é meu saldo?” e “quanto está a fatura?”.
+
+Todos os endpoints usam o mesmo Bearer token individual, restrito à permissão
+`telegram:finance`. Configure no `.env`:
+
+```dotenv
+FINANCE_API_URL=https://financeiro.exemplo.com
+FINANCE_API_TOKEN_MATHEUS=token-do-matheus
+FINANCE_API_TOKEN_LETICIA=token-da-leticia
+FINANCE_API_TIMEOUT_SECONDS=10
+```
+
+Os textos e valores financeiros não usam o fallback do Gemini: a classificação de
+categoria é feita localmente e a API rejeita qualquer categoria que não pertença ao
+dono do token.
 
 Consultas como "o que tenho hoje?", "quais são meus compromissos de amanhã?" e
 "mostre minha agenda desta semana" são respondidas sem criar eventos.

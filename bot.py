@@ -41,10 +41,12 @@ from agenda_bot.schemas import (
     CANCELAMENTO_SCHEMA,
     EDICAO_SCHEMA,
     EVENTO_SCHEMA,
+    GASTO_FINANCEIRO_SCHEMA,
     INTENCAO_SCHEMA,
     REPLICACAO_SCHEMA,
     TAREFA_SCHEMA,
 )
+from agenda_bot.finance_gateway import FinanceGateway, FinanceGatewayError
 from agenda_bot.google_tasks import GoogleTasksGateway
 from agenda_bot.handlers import functionalities as functionality_handlers
 from agenda_bot.handlers import preferences as preference_handlers
@@ -79,6 +81,7 @@ from agenda_bot.intent_rules import (
     eh_pedido_edicao,
     eh_pedido_replicacao,
     intervalo_de_consulta,
+    intencao_financeira,
     pedido_horarios_livres,
     pedido_planejamento_diario,
     periodo_do_texto,
@@ -109,6 +112,9 @@ from agenda_bot.settings import (
     GEMINI_FALLBACK_MODEL,
     GEMINI_MODEL,
     GEMINI_TIMEOUT_SECONDS,
+    FINANCE_API_TIMEOUT_SECONDS,
+    FINANCE_API_TOKENS,
+    FINANCE_API_URL,
     GOOGLE_SERVICE_ACCOUNT_FILE,
     GOOGLE_TASKS_TOKEN_DIR,
     LLM_FALLBACK_TO_GEMINI,
@@ -150,6 +156,11 @@ gemini_client = (
 )
 
 calendar_service = None
+finance_gateway = FinanceGateway(
+    FINANCE_API_URL,
+    FINANCE_API_TOKENS,
+    FINANCE_API_TIMEOUT_SECONDS,
+)
 
 
 def _runtime_module():
@@ -873,6 +884,237 @@ Mensagem: {json.dumps(texto, ensure_ascii=False)}
     return json.loads(gerar_json_intencao(prompt, INTENCAO_SCHEMA))
 
 
+def extrair_gasto_financeiro(texto: str, categorias: list[dict]) -> dict:
+    """Usa apenas o modelo local: descrição e valores financeiros não vão à nuvem."""
+    if not OLLAMA_ENABLED:
+        raise ValueError(
+            "a IA local precisa estar ativa para interpretar lançamentos financeiros"
+        )
+
+    agora = datetime.now(TZ)
+    opcoes = [
+        {"id": int(item["id"]), "nome": str(item["name"])}
+        for item in categorias
+    ]
+    prompt = f"""Extraia um gasto já realizado de uma mensagem em português do Brasil.
+Data atual: {agora.strftime('%Y-%m-%d')} ({TIMEZONE}).
+Categorias válidas: {json.dumps(opcoes, ensure_ascii=False)}.
+
+Regras:
+- A data padrão é hoje; só use outra quando a mensagem disser isso.
+- A descrição deve ser curta, sem verbos como comprei, paguei, gastei ou lance.
+- Preserve exatamente o valor informado e use ponto ou vírgula apenas como decimal.
+- Escolha category_id somente entre os IDs fornecidos, pela categoria semanticamente
+  mais adequada. Para refrigerante, lanche e comida comprada em mercado, prefira uma
+  categoria como Mercado; para pedido pronto, prefira Delivery ou Comer fora.
+- Se nenhuma categoria combinar com segurança, use null. Nunca invente um ID.
+
+Mensagem: {json.dumps(texto, ensure_ascii=False)}
+"""
+    conteudo = gerar_resposta_ollama(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Você classifica gastos pessoais. Responda somente o JSON do "
+                    "schema e use apenas as categorias fornecidas."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema=GASTO_FINANCEIRO_SCHEMA,
+        max_tokens=180,
+    )
+    dados = json.loads(conteudo)
+    descricao = str(dados.get("description", "")).strip()
+    valor = str(dados.get("amount", "")).strip().replace("R$", "").strip()
+    data_gasto = str(dados.get("date", "")).strip()
+    if len(descricao) < 2:
+        raise ValueError("não consegui identificar o que foi comprado")
+    if not re.fullmatch(r"\d+(?:[.,]\d{1,2})?", valor):
+        raise ValueError("não consegui identificar um valor válido")
+    try:
+        date.fromisoformat(data_gasto)
+    except ValueError as erro:
+        raise ValueError("não consegui identificar a data do gasto") from erro
+
+    ids_validos = {int(item["id"]) for item in categorias}
+    categoria_id = dados.get("category_id")
+    if categoria_id is not None:
+        try:
+            categoria_id = int(categoria_id)
+        except (TypeError, ValueError):
+            categoria_id = None
+    if categoria_id not in ids_validos:
+        categoria_id = None
+
+    return {
+        "description": descricao,
+        "amount": valor,
+        "date": data_gasto,
+        "category_id": categoria_id,
+    }
+
+
+def nome_categoria_gasto(gasto: dict, categorias: list[dict]) -> str:
+    categoria_id = gasto.get("category_id")
+    return next(
+        (
+            str(item["name"])
+            for item in categorias
+            if int(item["id"]) == categoria_id
+        ),
+        "Sem categoria",
+    )
+
+
+def resumo_gasto_financeiro(gasto: dict, categoria: str) -> str:
+    data_gasto = date.fromisoformat(gasto["date"])
+    valor_bruto = gasto["amount"]
+    valor = (
+        valor_bruto["formatted"]
+        if isinstance(valor_bruto, dict)
+        else f"R$ {str(valor_bruto).replace('.', ',')}"
+    )
+    return (
+        f"{gasto['description']}\n"
+        f"💰 {valor}\n"
+        f"🗓 {data_gasto.strftime('%d/%m/%Y')}\n"
+        f"🏷 {categoria}"
+    )
+
+
+async def iniciar_gasto_financeiro(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    role: str,
+    texto: str,
+) -> None:
+    if not finance_gateway.configured(role):
+        raise FinanceGatewayError(
+            f"A integração financeira de {role} ainda não está configurada."
+        )
+    categorias = await asyncio.to_thread(finance_gateway.categories, role)
+    gasto = await asyncio.to_thread(extrair_gasto_financeiro, texto, categorias)
+    categoria = nome_categoria_gasto(gasto, categorias)
+    token = salvar_acao_pendente(
+        context,
+        "gastos_financeiros_pendentes",
+        {"gasto": gasto, "role": role, "categoria": categoria},
+    )
+    await update.message.reply_text(
+        f"Confira antes de lançar:\n\n{resumo_gasto_financeiro(gasto, categoria)}",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Confirmar lançamento", callback_data=f"fc:{token}"
+                    )
+                ],
+                [InlineKeyboardButton("Não lançar", callback_data=f"fa:{token}")],
+            ]
+        ),
+    )
+
+
+async def callback_financeiro(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    role = role_do_usuario(query.from_user.id)
+    if not role:
+        await query.answer("Telegram não autorizado.", show_alert=True)
+        return
+    await query.answer()
+
+    acao, token = query.data.split(":", 1)
+    pendentes = context.user_data.get("gastos_financeiros_pendentes", {})
+    pendente = pendentes.get(token)
+    if (
+        not pendente
+        or pendente.get("role") != role
+        or datetime.now(TZ).timestamp() - pendente["criado_em"] > 900
+    ):
+        pendentes.pop(token, None)
+        await query.edit_message_text(
+            "⌛ Esta confirmação expirou. Envie o gasto novamente."
+        )
+        return
+    if acao == "fa":
+        pendentes.pop(token, None)
+        await query.edit_message_text("👍 Lançamento cancelado. Nada foi adicionado.")
+        return
+
+    try:
+        criado = await asyncio.to_thread(
+            finance_gateway.create_expense, role, pendente["gasto"]
+        )
+    except FinanceGatewayError as erro:
+        LOGGER.warning("Falha segura ao lançar gasto financeiro: %s", erro)
+        await query.edit_message_text(f"❌ {erro}")
+        return
+
+    pendentes.pop(token, None)
+    categoria = (
+        criado.get("category", {}).get("name")
+        if criado.get("category")
+        else "Sem categoria"
+    )
+    await query.edit_message_text(
+        "✅ Gasto lançado.\n\n" + resumo_gasto_financeiro(criado, categoria)
+    )
+
+
+async def responder_contas_financeiras(update: Update, role: str) -> None:
+    resposta = await asyncio.to_thread(finance_gateway.payables, role)
+    contas = resposta.get("data", [])
+    if not contas:
+        await update.message.reply_text(
+            "✅ Você não tem contas fixas pendentes até o fim deste mês."
+        )
+        return
+    linhas = ["📋 Contas fixas pendentes:"]
+    for conta in contas[:20]:
+        vencimento = date.fromisoformat(conta["due_date"]).strftime("%d/%m")
+        marcador = "⚠️" if conta.get("is_overdue") else "•"
+        linhas.append(
+            f"\n{marcador} {vencimento} — {conta['description']}: "
+            f"{conta['amount']['formatted']}"
+        )
+    if len(contas) > 20:
+        linhas.append(f"\n… e mais {len(contas) - 20} conta(s).")
+    total = resposta.get("meta", {}).get("total", {}).get("formatted")
+    if total:
+        linhas.append(f"\n\nTotal pendente: {total}")
+    await update.message.reply_text("".join(linhas))
+
+
+async def responder_resumo_financeiro(
+    update: Update, role: str, *, somente_fatura: bool
+) -> None:
+    resumo = await asyncio.to_thread(finance_gateway.summary, role)
+    if somente_fatura:
+        fatura = resumo["invoice"]
+        situacao = "paga" if fatura["is_paid"] else "pendente"
+        vencimento = (
+            date.fromisoformat(fatura["due_date"]).strftime("%d/%m/%Y")
+            if fatura.get("due_date")
+            else "não informado"
+        )
+        await update.message.reply_text(
+            f"💳 Fatura de {resumo['period_label']}: "
+            f"{fatura['total']['formatted']}\n"
+            f"Status: {situacao} · vencimento: {vencimento}"
+        )
+        return
+    await update.message.reply_text(
+        f"💰 Saldo de {resumo['period_label']}: "
+        f"{resumo['balance']['formatted']}\n"
+        f"Saldo previsto: {resumo['planned_balance']['formatted']}\n"
+        f"Ainda a pagar: {resumo['pending_outflow']['formatted']}"
+    )
+
+
 def texto_tem_data_de_evento(texto: str) -> bool:
     normalizado = texto_normalizado(texto)
     return bool(
@@ -1283,6 +1525,8 @@ def evento_referenciado(texto: str, role: str) -> Optional[dict]:
 
 
 def mensagem_erro_usuario(acao: str, erro: Exception) -> str:
+    if isinstance(erro, FinanceGatewayError):
+        return f"❌ {erro}"
     if isinstance(erro, errors.ServerError) and erro.code == 503:
         return (
             f"❌ Não consegui {acao}: o serviço de interpretação está ocupado. "
@@ -2571,6 +2815,11 @@ def obter_status_servicos(role: str) -> list[str]:
         if caminho_token_tasks(role).is_file()
         else "❌ Google Tarefas sem autorização"
     )
+    try:
+        finance_gateway.categories(role)
+        linhas.append("✅ Finanças")
+    except FinanceGatewayError:
+        linhas.append("❌ Finanças")
     if OLLAMA_ENABLED:
         try:
             resposta = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
@@ -2629,6 +2878,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if await personal_reminder_handlers.continue_input(
             _runtime_module(), update, context, role, texto
         ):
+            return
+        intencao_financas = intencao_financeira(texto)
+        if intencao_financas == "registrar_gasto":
+            await iniciar_gasto_financeiro(update, context, role, texto)
+            return
+        if intencao_financas == "consultar_contas":
+            await responder_contas_financeiras(update, role)
+            return
+        if intencao_financas == "consultar_saldo":
+            await responder_resumo_financeiro(update, role, somente_fatura=False)
+            return
+        if intencao_financas == "consultar_fatura":
+            await responder_resumo_financeiro(update, role, somente_fatura=True)
             return
         if await continuar_criacao_incompleta(update, context, texto, role):
             return
@@ -2890,6 +3152,7 @@ def main() -> None:
     app.add_handler(CommandHandler("versao", versao))
     app.add_handler(CommandHandler("funcionalidades", funcionalidades_cmd))
     app.add_handler(CallbackQueryHandler(callback_criacao, pattern=r"^g[ca]:"))
+    app.add_handler(CallbackQueryHandler(callback_financeiro, pattern=r"^f[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_tarefa, pattern=r"^t[ca]:"))
     app.add_handler(
         CallbackQueryHandler(callback_alteracao_tarefa, pattern=r"^t(?:uc|ua|dc|da):")

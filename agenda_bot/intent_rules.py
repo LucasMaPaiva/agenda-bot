@@ -16,6 +16,54 @@ def texto_normalizado(texto: str) -> str:
     )
 
 
+def intencao_financeira(texto: str) -> Optional[str]:
+    """Reconhece as quatro operações financeiras iniciais sem enviar texto à nuvem."""
+    normalizado = texto_normalizado(texto)
+    palavras = set(re.findall(r"[a-z0-9]+", normalizado))
+
+    if "fatura" in palavras:
+        return "consultar_fatura"
+
+    if (
+        re.search(r"\bcontas?\b.*\b(?:pagar|pendente|pendentes|vencer)\b", normalizado)
+        or re.search(r"\b(?:gastos?|despesas?)\s+fix[oa]s?\b", normalizado)
+    ):
+        return "consultar_contas"
+
+    if "saldo" in palavras or re.search(
+        r"\bquanto\s+(?:eu\s+)?(?:tenho|sobrou|sobra)\b", normalizado
+    ):
+        return "consultar_saldo"
+
+    tem_verbo = bool(
+        palavras
+        & {
+            "comprei",
+            "gastei",
+            "paguei",
+            "custou",
+            "lanca",
+            "lancar",
+            "lance",
+            "registra",
+            "registrar",
+            "registre",
+        }
+    )
+    tem_valor = bool(
+        re.search(
+            r"(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})|"
+            r"(?:r\$\s*)?\d+(?:\.\d{1,2})?|"
+            r"\b\d+\s+reais?\b",
+            normalizado,
+        )
+    )
+    if tem_verbo and tem_valor:
+        return "registrar_gasto"
+
+    return None
+
+
 def periodo_do_texto(texto: str) -> Optional[str]:
     """Retorna o período do dia mencionado explicitamente pelo usuário."""
     palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
