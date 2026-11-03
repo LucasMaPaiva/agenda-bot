@@ -174,6 +174,10 @@ cp .env.example .env
 lembretes de eventos enviados. Não apague esse arquivo enquanto o bot estiver em uso:
 além dos usuários autorizados, isso removeria os lembretes ainda não enviados.
 
+Lembretes avulsos também podem ser diários. Por exemplo, “me lembre todos os dias da
+Quarta Jovem” faz o bot perguntar o horário, mostrar a recorrência na confirmação e
+reagendar automaticamente o próximo aviso depois de cada envio.
+
 ### 5. Google Tarefas — OAuth individual (opcional)
 
 A conta de serviço do calendário não acessa as tarefas pessoais. Cada usuário precisa

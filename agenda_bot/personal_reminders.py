@@ -17,6 +17,8 @@ _WEEKDAYS = {
     "domingo": 6,
 }
 
+_DAILY_PATTERN = re.compile(r"\b(?:todos?\s+os\s+dias|todo\s+dia|diariamente)\b")
+
 
 def eh_pedido_lembrete_avulso(texto: str) -> bool:
     normalized = texto_normalizado(texto)
@@ -120,7 +122,7 @@ def _extract_items(text: str, spans: list[tuple[int, int]]) -> list[str]:
             + remaining[prefix.end() :]
         )
         normalized = texto_normalizado(remaining)
-    connector = re.match(r"\s*(?:de|que|para|pra)\b\s*", normalized)
+    connector = re.match(r"\s*(?:de|do|da|dos|das|que|para|pra)\b\s*", normalized)
     if connector:
         remaining = (
             remaining[: connector.start()]
@@ -141,9 +143,17 @@ def parse_request(text: str, now: datetime | None = None) -> dict:
     """Extrai itens, data e hora sem IA; campos ausentes ficam como None."""
     now = now or datetime.now(TZ)
     normalized = texto_normalizado(text)
+    recurrence_match = _DAILY_PATTERN.search(normalized)
+    recurrence = "diaria" if recurrence_match else "nenhuma"
     due_time, time_span = _parse_time(normalized)
-    due_date, date_span = _parse_date(normalized, now.date())
-    spans = [span for span in (time_span, date_span) if span]
+    # Em "todos os dias da Quarta Jovem", Quarta é parte do assunto, não um dia.
+    # Datas explícitas continuam disponíveis para lembretes não recorrentes.
+    if recurrence == "diaria":
+        due_date, date_span = None, None
+    else:
+        due_date, date_span = _parse_date(normalized, now.date())
+    recurrence_span = recurrence_match.span() if recurrence_match else None
+    spans = [span for span in (time_span, date_span, recurrence_span) if span]
     items = _extract_items(text, spans)
     due_at = None
     if due_time and due_date:
@@ -157,6 +167,7 @@ def parse_request(text: str, now: datetime | None = None) -> dict:
         "time_explicit": time_span is not None,
         "invalid_date": date_span is not None and due_date is None,
         "invalid_time": time_span is not None and due_time is None,
+        "recurrence": recurrence,
     }
 
 
@@ -166,6 +177,8 @@ def apply_update(draft: dict, text: str, now: datetime | None = None) -> dict:
     normalized = texto_normalizado(text)
     update = parse_request(text, now)
     result = dict(draft)
+    if update.get("recurrence") != "nenhuma":
+        result["recurrence"] = update["recurrence"]
     if update["date"]:
         result["invalid_date"] = False
     elif update["invalid_date"]:
@@ -221,6 +234,9 @@ def format_preview(draft: dict) -> str:
     lines.extend(f"• {item}" for item in draft.get("items", []))
     due_at = draft.get("due_at")
     if due_at:
+        if draft.get("recurrence") == "diaria":
+            lines.append(f"\n🔁 todos os dias às {due_at.strftime('%H:%M')}")
+            return "\n".join(lines)
         today = datetime.now(TZ).date()
         if due_at.date() == today:
             day_label = "hoje"

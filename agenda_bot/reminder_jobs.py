@@ -173,10 +173,10 @@ async def check_personal_reminders(app, context) -> None:
             LOGGER.exception("Falha ao enviar lembrete avulso %s", reminder["id"])
             continue
         try:
-            app.concluir_lembrete_avulso(reminder["id"])
+            app.concluir_lembrete_avulso(reminder["id"], now)
         except Exception:
             LOGGER.exception(
-                "Lembrete avulso %s foi enviado, mas não pôde ser removido",
+                "Lembrete avulso %s foi enviado, mas não pôde ser finalizado",
                 reminder["id"],
             )
 

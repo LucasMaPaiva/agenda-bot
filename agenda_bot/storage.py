@@ -63,6 +63,7 @@ class AgendaRepository:
                     texto TEXT NOT NULL,
                     reminder_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    recurrence TEXT NOT NULL DEFAULT 'nenhuma',
                     status TEXT NOT NULL DEFAULT 'pendente'
                         CHECK (status IN ('pendente', 'enviando'))
                 );
@@ -125,6 +126,15 @@ class AgendaRepository:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(lembretes_avulsos)")
+            }
+            if "recurrence" not in columns:
+                connection.execute(
+                    "ALTER TABLE lembretes_avulsos "
+                    "ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'nenhuma'"
+                )
             # Se o processo caiu durante um envio, o lembrete continua elegível.
             connection.execute(
                 "UPDATE lembretes_avulsos SET status = 'pendente' "
@@ -132,14 +142,19 @@ class AgendaRepository:
             )
 
     def add_personal_reminder(
-        self, role: str, chat_id: int, text: str, reminder_at: datetime
+        self,
+        role: str,
+        chat_id: int,
+        text: str,
+        reminder_at: datetime,
+        recurrence: str = "nenhuma",
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO lembretes_avulsos (
-                    role, chat_id, texto, reminder_at, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    role, chat_id, texto, reminder_at, created_at, recurrence
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     role,
@@ -147,6 +162,7 @@ class AgendaRepository:
                     text,
                     reminder_at.isoformat(),
                     datetime.now(self.timezone).isoformat(),
+                    recurrence,
                 ),
             )
             return int(cursor.lastrowid)
@@ -155,7 +171,7 @@ class AgendaRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, role, chat_id, texto, reminder_at
+                SELECT id, role, chat_id, texto, reminder_at, recurrence
                 FROM lembretes_avulsos
                 WHERE status = 'pendente' AND reminder_at <= ?
                 ORDER BY reminder_at, id
@@ -170,8 +186,25 @@ class AgendaRepository:
                 )
             return rows
 
-    def complete_personal_reminder(self, reminder_id: int) -> None:
+    def complete_personal_reminder(
+        self, reminder_id: int, completed_at: datetime | None = None
+    ) -> None:
         with self.connect() as connection:
+            row = connection.execute(
+                "SELECT reminder_at, recurrence FROM lembretes_avulsos WHERE id = ?",
+                (reminder_id,),
+            ).fetchone()
+            if row and row["recurrence"] == "diaria":
+                now = completed_at or datetime.now(self.timezone)
+                next_at = datetime.fromisoformat(row["reminder_at"])
+                while next_at <= now:
+                    next_at += timedelta(days=1)
+                connection.execute(
+                    "UPDATE lembretes_avulsos "
+                    "SET reminder_at = ?, status = 'pendente' WHERE id = ?",
+                    (next_at.isoformat(), reminder_id),
+                )
+                return
             connection.execute(
                 "DELETE FROM lembretes_avulsos WHERE id = ?", (reminder_id,)
             )

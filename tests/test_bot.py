@@ -754,6 +754,18 @@ class PersistenceTest(unittest.TestCase):
 
 
 class PersonalReminderLogicTest(unittest.TestCase):
+    def test_lembrete_diario_preserva_quarta_jovem_como_assunto(self):
+        agora = datetime(2026, 10, 14, 10, 0, tzinfo=bot.TZ)
+        pedido = parse_request(
+            "me lembre todos os dias da quarta jovem",
+            agora,
+        )
+
+        self.assertEqual(pedido["items"], ["quarta jovem"])
+        self.assertEqual(pedido["recurrence"], "diaria")
+        self.assertIsNone(pedido["date"])
+        self.assertIsNone(pedido["time"])
+
     def test_parseia_um_lembrete_com_varios_itens(self):
         agora = datetime(2026, 10, 8, 10, 0, tzinfo=bot.TZ)
         pedido = parse_request(
@@ -854,6 +866,62 @@ class PersonalReminderFlowTest(unittest.TestCase):
             )
             self.assertIn("amanhã às 12:00", message.respostas[-1][0])
             self.assertIn("rascunhos_lembretes_avulsos", context.user_data)
+
+        asyncio.run(fluxo())
+
+    def test_lembrete_diario_pergunta_horario_e_e_reagendado_apos_envio(self):
+        async def fluxo():
+            context = SimpleNamespace(user_data={})
+            message = MensagemFake()
+            update = SimpleNamespace(
+                message=message,
+                effective_chat=SimpleNamespace(id=42),
+            )
+            await bot.personal_reminder_handlers.begin(
+                bot,
+                update,
+                context,
+                "Matheus",
+                "me lembre todos os dias da quarta jovem",
+            )
+            self.assertIn("todos os dias", message.respostas[-1][0])
+
+            await bot.personal_reminder_handlers.continue_input(
+                bot, update, context, "Matheus", "às 19h"
+            )
+            self.assertIn("• quarta jovem", message.respostas[-1][0])
+            self.assertIn("todos os dias às 19:00", message.respostas[-1][0])
+
+            token = next(iter(context.user_data["rascunhos_lembretes_avulsos"]))
+            query = QueryFake(f"prc:{token}")
+            with patch.object(bot, "role_do_usuario", return_value="Matheus"):
+                await bot.callback_lembrete_avulso(
+                    SimpleNamespace(callback_query=query), context
+                )
+
+            with bot.conectar_banco() as connection:
+                reminder = connection.execute(
+                    "SELECT id, texto, reminder_at, recurrence "
+                    "FROM lembretes_avulsos"
+                ).fetchone()
+            self.assertEqual(reminder["texto"], "• quarta jovem")
+            self.assertEqual(reminder["recurrence"], "diaria")
+
+            first_at = datetime.fromisoformat(reminder["reminder_at"])
+            due = bot.reivindicar_lembretes_avulsos_vencidos(first_at)
+            self.assertEqual(len(due), 1)
+            bot.concluir_lembrete_avulso(reminder["id"], first_at)
+
+            with bot.conectar_banco() as connection:
+                rescheduled = connection.execute(
+                    "SELECT reminder_at, status FROM lembretes_avulsos WHERE id = ?",
+                    (reminder["id"],),
+                ).fetchone()
+            self.assertEqual(
+                datetime.fromisoformat(rescheduled["reminder_at"]),
+                first_at + timedelta(days=1),
+            )
+            self.assertEqual(rescheduled["status"], "pendente")
 
         asyncio.run(fluxo())
 

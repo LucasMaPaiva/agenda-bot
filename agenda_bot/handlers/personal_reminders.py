@@ -32,6 +32,8 @@ def _missing_prompt(draft: dict) -> str | None:
     if draft.get("invalid_time"):
         return "Não entendi esse horário. Diga, por exemplo, 12h ou 12:30."
     if not draft.get("time"):
+        if draft.get("recurrence") == "diaria":
+            return "Que horas devo te lembrar todos os dias? Por exemplo: 12h ou 12:30."
         if draft.get("date"):
             return "Que horas devo te lembrar? Por exemplo: 12h ou 12:30."
         return "Para qual dia e horário? Por exemplo: hoje às 12 ou amanhã às 12:30."
@@ -40,6 +42,20 @@ def _missing_prompt(draft: dict) -> str | None:
     if not draft.get("due_at"):
         return "O horário ficou no passado. Me diga um dia e horário futuros."
     return None
+
+
+def _update_due_at(app, draft: dict) -> None:
+    """Monta o próximo disparo, avançando recorrências diárias já vencidas."""
+    if not draft.get("date") or not draft.get("time"):
+        draft["due_at"] = None
+        return
+    now = app.datetime.now(app.TZ)
+    due_at = app.datetime.combine(draft["date"], draft["time"], tzinfo=app.TZ)
+    if draft.get("recurrence") == "diaria":
+        while due_at <= now:
+            due_at += timedelta(days=1)
+        draft["date"] = due_at.date()
+    draft["due_at"] = due_at
 
 
 async def _show_confirmation(app, update, context, draft: dict) -> None:
@@ -70,9 +86,18 @@ async def _show_confirmation(app, update, context, draft: dict) -> None:
 
 async def begin(app, update, context, role: str, text: str) -> None:
     draft = parse_request(text, app.datetime.now(app.TZ))
-    if draft.get("time") and not draft.get("date") and not draft.get("invalid_date"):
+    if (
+        (draft.get("time") or draft.get("recurrence") == "diaria")
+        and not draft.get("date")
+        and not draft.get("invalid_date")
+    ):
         draft["date"] = app.datetime.now(app.TZ).date()
-    if draft.get("due_at") and draft["due_at"] <= app.datetime.now(app.TZ):
+    _update_due_at(app, draft)
+    if (
+        draft.get("recurrence") != "diaria"
+        and draft.get("due_at")
+        and draft["due_at"] <= app.datetime.now(app.TZ)
+    ):
         draft["date"] = None
         draft["due_at"] = None
     draft["role"] = role
@@ -115,11 +140,9 @@ async def continue_input(app, update, context, role: str, text: str) -> bool:
         draft["date"] = update_data["date"]
     if update_data.get("items"):
         draft["items"] = update_data["items"]
-    if draft.get("date") and draft.get("time"):
-        draft["due_at"] = app.datetime.combine(
-            draft["date"], draft["time"], tzinfo=app.TZ
-        )
-        if draft["due_at"] <= app.datetime.now(app.TZ):
+    _update_due_at(app, draft)
+    if draft.get("due_at") and draft["due_at"] <= app.datetime.now(app.TZ):
+        if draft.get("recurrence") != "diaria":
             draft["date"] = None
             draft["due_at"] = None
     prompt = _missing_prompt(draft)
@@ -145,6 +168,7 @@ async def edit_input(app, update, context, role: str, text: str) -> bool:
         await update.message.reply_text("Tudo bem, não criei o lembrete.")
         return True
     revised = apply_update(draft, text, app.datetime.now(app.TZ))
+    _update_due_at(app, revised)
     if revised.get("due_at") and revised["due_at"] <= app.datetime.now(app.TZ):
         revised["date"] = None
         revised["due_at"] = None
@@ -186,6 +210,7 @@ async def callback(app, update, context) -> None:
         )
         return
 
+    _update_due_at(app, draft)
     if draft["due_at"] <= app.datetime.now(app.TZ):
         draft["date"] = None
         draft["due_at"] = None
@@ -197,7 +222,13 @@ async def callback(app, update, context) -> None:
 
     body = "\n".join(f"• {item}" for item in draft["items"])
     try:
-        app.salvar_lembrete_avulso(role, draft["chat_id"], body, draft["due_at"])
+        app.salvar_lembrete_avulso(
+            role,
+            draft["chat_id"],
+            body,
+            draft["due_at"],
+            draft.get("recurrence", "nenhuma"),
+        )
     except Exception:
         context.user_data[PENDING_KEY][token] = draft
         await query.edit_message_text(
