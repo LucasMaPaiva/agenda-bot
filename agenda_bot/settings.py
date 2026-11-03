@@ -49,6 +49,9 @@ FINANCE_API_URL = os.environ.get("FINANCE_API_URL", "").rstrip("/")
 FINANCE_API_TIMEOUT_SECONDS = int(
     os.environ.get("FINANCE_API_TIMEOUT_SECONDS", "10")
 )
+# Segredo compartilhado com o financeiro (TELEGRAM_LINK_SECRET lá) para o
+# vínculo por link; sem ele, /conectar_financeiro fica desligado.
+FINANCE_LINK_SECRET = os.environ.get("FINANCE_LINK_SECRET", "")
 FINANCE_API_TOKENS = {
     "Matheus": os.environ.get("FINANCE_API_TOKEN_MATHEUS", ""),
     "Letícia": os.environ.get("FINANCE_API_TOKEN_LETICIA", ""),

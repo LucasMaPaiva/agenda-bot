@@ -47,6 +47,7 @@ from agenda_bot.schemas import (
     TAREFA_SCHEMA,
 )
 from agenda_bot.finance_gateway import FinanceGateway, FinanceGatewayError
+from agenda_bot.finance_tokens import FinanceTokenStore
 from agenda_bot.google_tasks import GoogleTasksGateway
 from agenda_bot.handlers import functionalities as functionality_handlers
 from agenda_bot.handlers import preferences as preference_handlers
@@ -115,6 +116,7 @@ from agenda_bot.settings import (
     FINANCE_API_TIMEOUT_SECONDS,
     FINANCE_API_TOKENS,
     FINANCE_API_URL,
+    FINANCE_LINK_SECRET,
     GOOGLE_SERVICE_ACCOUNT_FILE,
     GOOGLE_TASKS_TOKEN_DIR,
     LLM_FALLBACK_TO_GEMINI,
@@ -160,6 +162,8 @@ finance_gateway = FinanceGateway(
     FINANCE_API_URL,
     FINANCE_API_TOKENS,
     FINANCE_API_TIMEOUT_SECONDS,
+    token_store=FinanceTokenStore(DATABASE_PATH),
+    link_secret=FINANCE_LINK_SECRET,
 )
 
 
@@ -303,17 +307,25 @@ def limpar_resumos_proativos_antigos() -> None:
 
 
 def salvar_lembrete_avulso(
-    role: str, chat_id: int, texto: str, reminder_at: datetime
+    role: str,
+    chat_id: int,
+    texto: str,
+    reminder_at: datetime,
+    recurrence: str = "nenhuma",
 ) -> int:
-    return _repository().add_personal_reminder(role, chat_id, texto, reminder_at)
+    return _repository().add_personal_reminder(
+        role, chat_id, texto, reminder_at, recurrence
+    )
 
 
 def reivindicar_lembretes_avulsos_vencidos(agora: datetime) -> list[sqlite3.Row]:
     return _repository().claim_due_personal_reminders(agora)
 
 
-def concluir_lembrete_avulso(lembrete_id: int) -> None:
-    _repository().complete_personal_reminder(lembrete_id)
+def concluir_lembrete_avulso(
+    lembrete_id: int, concluido_em: datetime | None = None
+) -> None:
+    _repository().complete_personal_reminder(lembrete_id, concluido_em)
 
 
 def liberar_lembrete_avulso(lembrete_id: int) -> None:
@@ -992,7 +1004,8 @@ async def iniciar_gasto_financeiro(
 ) -> None:
     if not finance_gateway.configured(role):
         raise FinanceGatewayError(
-            f"A integração financeira de {role} ainda não está configurada."
+            f"O financeiro de {role} ainda não está conectado. "
+            "Envie /conectar_financeiro."
         )
     categorias = await asyncio.to_thread(finance_gateway.categories, role)
     gasto = await asyncio.to_thread(extrair_gasto_financeiro, texto, categorias)
@@ -2777,6 +2790,74 @@ async def responder_conversa(
     await update.message.reply_text(resposta)
 
 
+# Vínculo por link com o financeiro: o bot pede, a pessoa confirma no app logada,
+# e o bot recolhe o token sozinho. Pergunta a cada poucos segundos até o link
+# vencer (10 minutos no financeiro).
+VINCULO_FINANCEIRO_INTERVALO_SEGUNDOS = 3
+VINCULO_FINANCEIRO_LIMITE_SEGUNDOS = 11 * 60
+
+
+async def conectar_financeiro_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    role = role_do_usuario(update.effective_user.id)
+    if not role:
+        await update.message.reply_text("Telegram não autorizado. Envie /start.")
+        return
+    if not finance_gateway.can_link():
+        await update.message.reply_text(
+            "O vínculo com o financeiro não está configurado neste bot."
+        )
+        return
+    try:
+        vinculo = await asyncio.to_thread(finance_gateway.start_link)
+    except FinanceGatewayError as erro:
+        await update.message.reply_text(str(erro))
+        return
+
+    nome_job = f"vinculo-financeiro:{role}"
+    for job in context.job_queue.get_jobs_by_name(nome_job):
+        job.schedule_removal()
+    context.job_queue.run_repeating(
+        verificar_vinculo_financeiro,
+        interval=VINCULO_FINANCEIRO_INTERVALO_SEGUNDOS,
+        first=VINCULO_FINANCEIRO_INTERVALO_SEGUNDOS,
+        last=VINCULO_FINANCEIRO_LIMITE_SEGUNDOS,
+        name=nome_job,
+        data={
+            "role": role,
+            "code": vinculo.code,
+            "chat_id": update.effective_chat.id,
+        },
+    )
+    await update.message.reply_text(
+        "Para conectar o financeiro, abra o link, entre na sua conta e confirme:\n"
+        f"{vinculo.url}\n\n"
+        f"Código de conferência: {vinculo.verification_code}\n"
+        "Ele precisa ser igual ao que aparece na tela. O link vale 10 minutos."
+    )
+
+
+async def verificar_vinculo_financeiro(context: ContextTypes.DEFAULT_TYPE) -> None:
+    dados = context.job.data
+    try:
+        status = await asyncio.to_thread(
+            finance_gateway.poll_link, dados["role"], dados["code"]
+        )
+    except FinanceGatewayError:
+        # Falha passageira de rede: tenta de novo na próxima volta.
+        return
+    if status == "pending":
+        return
+    context.job.schedule_removal()
+    mensagens = {
+        "approved": "✅ Financeiro conectado. Já pode lançar gastos por aqui.",
+        "expired": "O link do financeiro venceu. Envie /conectar_financeiro de novo.",
+        "claimed": "Este link já foi usado. Envie /conectar_financeiro de novo.",
+    }
+    await context.bot.send_message(dados["chat_id"], mensagens[status])
+
+
 async def versao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not role_do_usuario(update.effective_user.id):
         await update.message.reply_text("Telegram não autorizado. Envie /start.")
@@ -3150,6 +3231,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("limpar_conversa", limpar_conversa))
     app.add_handler(CommandHandler("versao", versao))
+    app.add_handler(CommandHandler("conectar_financeiro", conectar_financeiro_cmd))
     app.add_handler(CommandHandler("funcionalidades", funcionalidades_cmd))
     app.add_handler(CallbackQueryHandler(callback_criacao, pattern=r"^g[ca]:"))
     app.add_handler(CallbackQueryHandler(callback_financeiro, pattern=r"^f[ca]:"))
