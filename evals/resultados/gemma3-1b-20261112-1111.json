@@ -1,0 +1,2536 @@
+[
+  {
+    "id": 1,
+    "grupo": "simples",
+    "texto": "Dentista amanhã às 9h, responsável Letícia",
+    "esperado": {
+      "titulo": [
+        "dentista"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Dentista",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Dentista",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 20.69,
+    "erro": null
+  },
+  {
+    "id": 2,
+    "grupo": "dia da semana",
+    "texto": "pagar a conta de luz sexta às 18h",
+    "esperado": {
+      "titulo": [
+        "luz"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "18:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "pagar a conta de luz",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "18:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "pagar a conta de luz",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "18:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.7,
+    "erro": null
+  },
+  {
+    "id": 3,
+    "grupo": "simples",
+    "texto": "academia hoje às 19h",
+    "esperado": {
+      "titulo": [
+        "academia"
+      ],
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "academia",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "academia",
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 16.28,
+    "erro": null
+  },
+  {
+    "id": 4,
+    "grupo": "término",
+    "texto": "reunião com o contador segunda às 10h até 11h",
+    "esperado": {
+      "titulo": [
+        "contador"
+      ],
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": "11:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "reunião com o contador",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-11",
+      "hora_inicio": "10:00",
+      "hora_fim": "11:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "reunião com o contador",
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": "11:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 20.89,
+    "erro": null
+  },
+  {
+    "id": 5,
+    "grupo": "hora informal",
+    "texto": "aniversário da vó sábado ao meio-dia",
+    "esperado": {
+      "titulo": [
+        "aniversário",
+        "aniversario"
+      ],
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "12:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "aniversário da vó",
+      "data": "2026-11-13",
+      "data_fim": "1400-01-01",
+      "hora_inicio": "0800",
+      "hora_fim": "1200",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "sexta",
+        "sabado"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "aniversário da vó",
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "12:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": false,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 19.44,
+    "erro": null
+  },
+  {
+    "id": 6,
+    "grupo": "hora informal",
+    "texto": "culto domingo às 7 da noite",
+    "esperado": {
+      "titulo": [
+        "culto"
+      ],
+      "data": "2026-11-15",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "culto",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "domingo"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "culto",
+      "data": "2026-11-15",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 19.55,
+    "erro": null
+  },
+  {
+    "id": 7,
+    "grupo": "responsável",
+    "texto": "médico do Matheus dia 20 às 14h30",
+    "esperado": {
+      "titulo": [
+        "médic",
+        "medic",
+        "consulta"
+      ],
+      "data": "2026-11-20",
+      "data_fim": null,
+      "hora_inicio": "14:30",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Consulta médica",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "14:30",
+      "hora_fim": "14:30",
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Consulta médica",
+      "data": "2026-11-20",
+      "data_fim": null,
+      "hora_inicio": "14:30",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 23.14,
+    "erro": null
+  },
+  {
+    "id": 8,
+    "grupo": "data relativa",
+    "texto": "buscar encomenda depois de amanhã às 16h",
+    "esperado": {
+      "titulo": [
+        "encomenda"
+      ],
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "encomenda",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "encomenda",
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.51,
+    "erro": null
+  },
+  {
+    "id": 9,
+    "grupo": "data relativa",
+    "texto": "cinema terça que vem às 20h",
+    "esperado": {
+      "titulo": [
+        "cinema"
+      ],
+      "data": "2026-11-17",
+      "data_fim": null,
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "cinema",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "terca"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "cinema",
+      "data": "2026-11-17",
+      "data_fim": null,
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 15.7,
+    "erro": null
+  },
+  {
+    "id": 10,
+    "grupo": "data relativa",
+    "texto": "vacina do cachorro dia 3 às 8h",
+    "esperado": {
+      "titulo": [
+        "vacina"
+      ],
+      "data": "2026-12-03",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Vacina do cachorro",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Vacina do cachorro",
+      "data": "2026-12-03",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 21.85,
+    "erro": null
+  },
+  {
+    "id": 11,
+    "grupo": "término",
+    "texto": "almoço com os pais quarta 12h30 às 14h",
+    "esperado": {
+      "titulo": [
+        "almoço",
+        "almoco"
+      ],
+      "data": "2026-11-18",
+      "data_fim": null,
+      "hora_inicio": "12:30",
+      "hora_fim": "14:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "almoço",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "14:00",
+      "hora_fim": "14:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "quarta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "almoço",
+      "data": "2026-11-18",
+      "data_fim": null,
+      "hora_inicio": "12:30",
+      "hora_fim": "14:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": false,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.74,
+    "erro": null
+  },
+  {
+    "id": 12,
+    "grupo": "responsável",
+    "texto": "Letícia tem prova sexta às 8h",
+    "esperado": {
+      "titulo": [
+        "prova"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Prova de sexta às 8h",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "8:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Prova de sexta às 8h",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.38,
+    "erro": null
+  },
+  {
+    "id": 13,
+    "grupo": "responsável",
+    "texto": "corte de cabelo amanhã 15h, Matheus",
+    "esperado": {
+      "titulo": [
+        "cabelo"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "15:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "corte de cabelo",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "15:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "corte de cabelo",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "15:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 22.63,
+    "erro": null
+  },
+  {
+    "id": 14,
+    "grupo": "intervalo",
+    "texto": "viagem para Manaus de 20/11 até 23/11 às 6h",
+    "esperado": {
+      "titulo": [
+        "viagem",
+        "manaus"
+      ],
+      "data": "2026-11-20",
+      "data_fim": "2026-11-23",
+      "hora_inicio": "06:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Viagem para Manaus",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-23",
+      "hora_inicio": "2026-11-12 06:00:00",
+      "hora_fim": "2026-11-23 00:00:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "Viagem para Manaus",
+      "data": "2026-11-20",
+      "data_fim": "2026-11-23",
+      "hora_inicio": "06:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": true,
+      "hora_inicio": false,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 22.96,
+    "erro": null
+  },
+  {
+    "id": 15,
+    "grupo": "intervalo",
+    "texto": "plantão de 14/11 a 16/11 às 7h responsável Letícia",
+    "esperado": {
+      "titulo": [
+        "plantão",
+        "plantao"
+      ],
+      "data": "2026-11-14",
+      "data_fim": "2026-11-16",
+      "hora_inicio": "07:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "plantão",
+      "data": "2026-11-14",
+      "data_fim": "2026-11-16",
+      "hora_inicio": "07:00",
+      "hora_fim": "16:00",
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "plantão",
+      "data": "2026-11-14",
+      "data_fim": "2026-11-16",
+      "hora_inicio": "07:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 19.42,
+    "erro": null
+  },
+  {
+    "id": 16,
+    "grupo": "recorrência",
+    "texto": "academia toda segunda e quarta às 6h",
+    "esperado": {
+      "titulo": [
+        "academia"
+      ],
+      "hora_inicio": "06:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "segunda",
+        "quarta"
+      ]
+    },
+    "modelo": {
+      "titulo": "academia",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-14",
+      "hora_inicio": "6:00",
+      "hora_fim": "6:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "quarta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "academia",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-14",
+      "hora_inicio": "06:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "segunda",
+        "quarta"
+      ],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": false,
+      "dias_semana": true
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true,
+      "dias_semana": true
+    },
+    "segundos": 23.72,
+    "erro": null
+  },
+  {
+    "id": 17,
+    "grupo": "recorrência",
+    "texto": "aula de inglês de segunda a quinta às 19h",
+    "esperado": {
+      "titulo": [
+        "inglês",
+        "ingles"
+      ],
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ]
+    },
+    "modelo": {
+      "titulo": "aula de inglês",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "19:00",
+      "hora_fim": "19:00",
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "aula de inglês",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": false,
+      "dias_semana": true
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true,
+      "dias_semana": true
+    },
+    "segundos": 19.36,
+    "erro": null
+  },
+  {
+    "id": 18,
+    "grupo": "recorrência",
+    "texto": "reunião de condomínio todo primeiro domingo do mês às 10h",
+    "esperado": {
+      "titulo": [
+        "condomínio",
+        "condominio"
+      ],
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "mensal",
+      "dias_semana": [
+        "domingo"
+      ],
+      "ordem_mes": 1
+    },
+    "modelo": {
+      "titulo": "reunião de condomínio",
+      "data": "2026-11-13",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "reunião de condomínio",
+      "data": "2026-11-13",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "mensal",
+      "dias_semana": [
+        "domingo"
+      ],
+      "ordem_mes": 1
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false,
+      "dias_semana": false,
+      "ordem_mes": true
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true,
+      "dias_semana": true,
+      "ordem_mes": true
+    },
+    "segundos": 16.49,
+    "erro": null
+  },
+  {
+    "id": 19,
+    "grupo": "recorrência",
+    "texto": "tomar remédio todos os dias às 8h",
+    "esperado": {
+      "titulo": [
+        "remédio",
+        "remedio"
+      ],
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "diaria"
+    },
+    "modelo": {
+      "titulo": "Tomar remédio",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Tomar remédio",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 24.58,
+    "erro": null
+  },
+  {
+    "id": 20,
+    "grupo": "recorrência",
+    "texto": "feira toda sexta às 7h",
+    "esperado": {
+      "titulo": [
+        "feira"
+      ],
+      "hora_inicio": "07:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "sexta"
+      ]
+    },
+    "modelo": {
+      "titulo": "feira toda sexta às 7h",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "19:00",
+      "hora_fim": "21:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "sexta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "feira toda sexta às 7h",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "07:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "sexta"
+      ],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": false,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": false,
+      "dias_semana": true
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true,
+      "dias_semana": true
+    },
+    "segundos": 18.27,
+    "erro": null
+  },
+  {
+    "id": 21,
+    "grupo": "simples",
+    "texto": "jantar com os amigos amanhã às 21h",
+    "esperado": {
+      "titulo": [
+        "jantar"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "21:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "jantar com os amigos",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "21:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "jantar com os amigos",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "21:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 16.76,
+    "erro": null
+  },
+  {
+    "id": 22,
+    "grupo": "hora informal",
+    "texto": "entrega do trabalho da pós segunda 23h59",
+    "esperado": {
+      "titulo": [
+        "trabalho",
+        "entrega"
+      ],
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "23:59",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "entrega do trabalho da pós",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "23:59",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "entrega do trabalho da pós",
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "23:59",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.59,
+    "erro": null
+  },
+  {
+    "id": 23,
+    "grupo": "responsável",
+    "texto": "consulta Letícia ginecologista 18/11 às 9h20",
+    "esperado": {
+      "titulo": [
+        "consulta",
+        "ginecologista"
+      ],
+      "data": "2026-11-18",
+      "data_fim": null,
+      "hora_inicio": "09:20",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "consulta Letícia ginecologista",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "09:20",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "consulta Letícia ginecologista",
+      "data": "2026-11-18",
+      "data_fim": null,
+      "hora_inicio": "09:20",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.04,
+    "erro": null
+  },
+  {
+    "id": 24,
+    "grupo": "hora informal",
+    "texto": "lavar o carro sábado de manhã às 9",
+    "esperado": {
+      "titulo": [
+        "carro"
+      ],
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "lavar o carro",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "sabado"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "lavar o carro",
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 14.84,
+    "erro": null
+  },
+  {
+    "id": 25,
+    "grupo": "data absoluta",
+    "texto": "pagar boleto do cartão dia 25 às 10h",
+    "esperado": {
+      "titulo": [
+        "boleto",
+        "cartão",
+        "cartao"
+      ],
+      "data": "2026-11-25",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "pagar boleto do cartão",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-25",
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "pagar boleto do cartão",
+      "data": "2026-11-25",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.84,
+    "erro": null
+  },
+  {
+    "id": 26,
+    "grupo": "data absoluta",
+    "texto": "aniversário do Pedro 05/12 às 19h",
+    "esperado": {
+      "titulo": [
+        "pedro",
+        "aniversário",
+        "aniversario"
+      ],
+      "data": "2026-12-05",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Aniversário do Pedro",
+      "data": "2026-11-12",
+      "data_fim": "2026-12-05",
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Aniversário do Pedro",
+      "data": "2026-12-05",
+      "data_fim": null,
+      "hora_inicio": "19:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.7,
+    "erro": null
+  },
+  {
+    "id": 27,
+    "grupo": "término",
+    "texto": "call com cliente hoje às 15h até 16h30",
+    "esperado": {
+      "titulo": [
+        "call",
+        "cliente"
+      ],
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "15:00",
+      "hora_fim": "16:30",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "call com cliente",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "15:00",
+      "hora_fim": "16:30",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "call com cliente",
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "15:00",
+      "hora_fim": "16:30",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.01,
+    "erro": null
+  },
+  {
+    "id": 28,
+    "grupo": "data relativa",
+    "texto": "levar o carro na revisão quinta da semana que vem às 8h",
+    "esperado": {
+      "titulo": [
+        "revisão",
+        "revisao",
+        "carro"
+      ],
+      "data": "2026-11-19",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Levar o carro na revisão",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Levar o carro na revisão",
+      "data": "2026-11-19",
+      "data_fim": null,
+      "hora_inicio": "08:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 16.01,
+    "erro": null
+  },
+  {
+    "id": 29,
+    "grupo": "responsável",
+    "texto": "Matheus e Letícia: casamento da prima sábado às 16h",
+    "esperado": {
+      "titulo": [
+        "casamento"
+      ],
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Casamento da prima",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "Casamento da prima",
+      "data": "2026-11-14",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.57,
+    "erro": null
+  },
+  {
+    "id": 30,
+    "grupo": "responsável",
+    "texto": "festa de fim de ano da empresa 18/12 às 20h, responsável Matheus",
+    "esperado": {
+      "titulo": [
+        "festa"
+      ],
+      "data": "2026-12-18",
+      "data_fim": null,
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "festa de fim de ano da empresa 18/12 às 20h",
+      "data": "2026-11-12",
+      "data_fim": "2026-12-18",
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "festa de fim de ano da empresa 18/12 às 20h",
+      "data": "2026-12-18",
+      "data_fim": null,
+      "hora_inicio": "20:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.23,
+    "erro": null
+  },
+  {
+    "id": 31,
+    "grupo": "recorrência",
+    "texto": "natação terça e quinta às 18h",
+    "esperado": {
+      "titulo": [
+        "natação",
+        "natacao"
+      ],
+      "hora_inicio": "18:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "terca",
+        "quinta"
+      ]
+    },
+    "modelo": {
+      "titulo": "natação",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "18:00",
+      "hora_fim": "18:00",
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "terca",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "natação",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "18:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "semanal",
+      "dias_semana": [
+        "terca",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": false,
+      "dias_semana": true
+    },
+    "notas": {
+      "titulo": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true,
+      "dias_semana": true
+    },
+    "segundos": 15.86,
+    "erro": null
+  },
+  {
+    "id": 32,
+    "grupo": "término",
+    "texto": "estudar para a prova hoje das 14h às 17h",
+    "esperado": {
+      "titulo": [
+        "estudar",
+        "prova"
+      ],
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "14:00",
+      "hora_fim": "17:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "estudar para a prova",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "14:00",
+      "hora_fim": "17:00",
+      "responsavel": "Ambos",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "estudar para a prova",
+      "data": "2026-11-12",
+      "data_fim": null,
+      "hora_inicio": "14:00",
+      "hora_fim": "17:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 19.15,
+    "erro": null
+  },
+  {
+    "id": 33,
+    "grupo": "data absoluta",
+    "texto": "reunião de pais na escola dia 27/11 às 18h30",
+    "esperado": {
+      "titulo": [
+        "reunião",
+        "reuniao",
+        "escola"
+      ],
+      "data": "2026-11-27",
+      "data_fim": null,
+      "hora_inicio": "18:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "reunião de pais na escola",
+      "data": "2026-11-27",
+      "data_fim": "2026-11-27",
+      "hora_inicio": "18:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "reunião de pais na escola",
+      "data": "2026-11-27",
+      "data_fim": null,
+      "hora_inicio": "18:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.7,
+    "erro": null
+  },
+  {
+    "id": 34,
+    "grupo": "data absoluta",
+    "texto": "consulta do Matheus no oftalmo dia 1º de dezembro às 10h",
+    "esperado": {
+      "titulo": [
+        "oftalmo",
+        "consulta"
+      ],
+      "data": "2026-12-01",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "consulta do Matheus no oftalmo",
+      "data": "2026-12-01",
+      "data_fim": "2026-12-01",
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "consulta do Matheus no oftalmo",
+      "data": "2026-12-01",
+      "data_fim": null,
+      "hora_inicio": "10:00",
+      "hora_fim": null,
+      "responsavel": "Matheus",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.79,
+    "erro": null
+  },
+  {
+    "id": 35,
+    "grupo": "hora informal",
+    "texto": "churrasco domingo 13h",
+    "esperado": {
+      "titulo": [
+        "churrasco"
+      ],
+      "data": "2026-11-15",
+      "data_fim": null,
+      "hora_inicio": "13:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "churrasco",
+      "data": "2026-11-13",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "13:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "churrasco",
+      "data": "2026-11-15",
+      "data_fim": null,
+      "hora_inicio": "13:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.36,
+    "erro": null
+  },
+  {
+    "id": 36,
+    "grupo": "hora informal",
+    "texto": "mercado amanhã cedo às 7h30",
+    "esperado": {
+      "titulo": [
+        "mercado"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "07:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "mercado",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-12",
+      "hora_inicio": "07:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "mercado",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "07:30",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 22.08,
+    "erro": null
+  },
+  {
+    "id": 37,
+    "grupo": "data absoluta",
+    "texto": "voo para São Paulo dia 10/12 às 5h40",
+    "esperado": {
+      "titulo": [
+        "voo",
+        "são paulo",
+        "sao paulo"
+      ],
+      "data": "2026-12-10",
+      "data_fim": null,
+      "hora_inicio": "05:40",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Voo para São Paulo",
+      "data": "2026-11-12",
+      "data_fim": "2026-12-10",
+      "hora_inicio": "05:40",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "Voo para São Paulo",
+      "data": "2026-12-10",
+      "data_fim": null,
+      "hora_inicio": "05:40",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 18.73,
+    "erro": null
+  },
+  {
+    "id": 38,
+    "grupo": "data relativa",
+    "texto": "dentista da Letícia segunda que vem às 16h",
+    "esperado": {
+      "titulo": [
+        "dentista"
+      ],
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "Consulta de Dentista",
+      "data": "2026-11-13",
+      "data_fim": "2026-11-14",
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "diaria",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "Consulta de Dentista",
+      "data": "2026-11-16",
+      "data_fim": null,
+      "hora_inicio": "16:00",
+      "hora_fim": null,
+      "responsavel": "Letícia",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": false
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 17.37,
+    "erro": null
+  },
+  {
+    "id": 39,
+    "grupo": "hora informal",
+    "texto": "pegar as crianças na escola amanhã às 5 da tarde",
+    "esperado": {
+      "titulo": [
+        "crianças",
+        "criancas",
+        "escola"
+      ],
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "17:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "pegar as crianças na escola",
+      "data": "2026-11-12",
+      "data_fim": "2026-11-13",
+      "hora_inicio": "14:00",
+      "hora_fim": "17:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": null
+    },
+    "obtido": {
+      "titulo": "pegar as crianças na escola",
+      "data": "2026-11-13",
+      "data_fim": null,
+      "hora_inicio": "17:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": false,
+      "data_fim": false,
+      "hora_inicio": false,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 35.87,
+    "erro": null
+  },
+  {
+    "id": 40,
+    "grupo": "intervalo",
+    "texto": "férias na praia de 22/12 até 28/12 às 9h, responsável Ambos",
+    "esperado": {
+      "titulo": [
+        "férias",
+        "ferias",
+        "praia"
+      ],
+      "data": "2026-12-22",
+      "data_fim": "2026-12-28",
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma"
+    },
+    "modelo": {
+      "titulo": "férias na praia",
+      "data": "2026-12-22",
+      "data_fim": "2026-12-28",
+      "hora_inicio": "2026-12-22 09:00:00",
+      "hora_fim": "2026-12-28 00:00:00",
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [
+        "segunda",
+        "terca",
+        "quarta",
+        "quinta"
+      ],
+      "ordem_mes": 1
+    },
+    "obtido": {
+      "titulo": "férias na praia",
+      "data": "2026-12-22",
+      "data_fim": "2026-12-28",
+      "hora_inicio": "09:00",
+      "hora_fim": null,
+      "responsavel": "Ambos",
+      "recorrencia": "nenhuma",
+      "dias_semana": [],
+      "ordem_mes": null
+    },
+    "notas_so_modelo": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": false,
+      "hora_fim": false,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "notas": {
+      "titulo": true,
+      "data": true,
+      "data_fim": true,
+      "hora_inicio": true,
+      "hora_fim": true,
+      "responsavel": true,
+      "recorrencia": true
+    },
+    "segundos": 37.05,
+    "erro": null
+  }
+]

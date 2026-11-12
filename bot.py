@@ -26,6 +26,7 @@ from telegram.ext import (
     filters,
 )
 
+from agenda_bot.date_rules import corrigir_extracao
 from agenda_bot.calendar_gateway import (
     create_event as _create_event,
     create_events_with_ids as _create_events_with_ids,
@@ -494,6 +495,7 @@ def gerar_conversa_llm(mensagens: list[dict]) -> str:
 
 def extrair_eventos(texto: str, role: Optional[str] = None) -> list[dict]:
     agora = datetime.now(TZ)
+    texto_original = texto
     responsavel_resolvido = responsavel_mencionado_no_texto(texto, role)
     texto = texto_com_responsavel_resolvido(texto, role)
     prompt = f"""Você extrai dados de eventos de agenda a partir de mensagens em português do Brasil.
@@ -518,6 +520,8 @@ Regras:
 Mensagem: "{texto}"
 """
     dados = json.loads(gerar_json_operacao(prompt))
+    # Datas, horários e recorrência explícitos no texto são calculados no código.
+    dados = corrigir_extracao(dados, texto_original, agora.date())
     if responsavel_resolvido:
         dados["responsavel"] = responsavel_resolvido
 
