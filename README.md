@@ -2,25 +2,45 @@
 
 Bot que recebe mensagens em texto livre no Telegram e gerencia o Google Agenda
 compartilhado do Matheus e da Letícia, com integração opcional ao Google Tarefas
-individual de cada um, consulta e lançamento no Finanças App e conversa local pelo
-Gemma 3 executado no Ollama.
+individual de cada um e consulta e lançamento no Finanças App. A interpretação das
+mensagens usa um LLM local (Gemma 3 no Ollama) com saída em JSON validada por schema;
+o Gemini é um fallback opcional, usado só quando há chave configurada.
 
 Além de criar eventos, o bot consulta compromissos de hoje, amanhã ou da semana e
 envia lembretes no Telegram. Somente os dois usuários cadastrados podem usar o bot.
 
-**Documentação da rotina e das convenções (fonte da verdade):** `~/Documents/agenda/README.md`
-Esse bot segue as mesmas regras definidas lá:
+Convenções da agenda:
 - Fuso horário: `America/Boa_Vista` (UTC-4)
 - Campo `description` do evento sempre com `Responsável: Matheus` / `Letícia` / `Ambos`
-- Cores por responsável: 🔵 Azul (Matheus) · 🌸 Rosa (Letícia) · 🟢 Verde (Ambos) — mesma lógica do `colorizeRotina.gs`, mas aplicada direto na criação do evento (sem precisar rodar o script depois)
+- Cores por responsável: 🔵 Azul (Matheus) · 🌸 Rosa (Letícia) · 🟢 Verde (Ambos), aplicadas direto na criação do evento
 
 ## Como funciona
 1. Telegram recebe a mensagem (ex: "lembrar de pagar a conta de luz sexta às 18h")
-2. Pedidos explícitos usam o Gemini para extrair título/data/hora/responsável com precisão
-3. O bot mostra uma prévia e só cria depois da confirmação no Telegram
-4. Conversas e pedidos ambíguos usam o Gemma 3 local; o código consulta a agenda e calcula
-   conflitos antes de fornecer os fatos ao modelo
-5. A cada minuto, o bot procura compromissos próximos e avisa o responsável 30 minutos antes
+2. Intenções simples são reconhecidas por regras, sem chamar IA (`intent_rules.py`)
+3. O resto vai para o LLM local, que devolve título, data, hora e responsável em JSON
+   seguindo um schema (`schemas.py`); se houver chave do Gemini, ele é usado como
+   fallback quando o modelo local falha
+4. O bot mostra uma prévia e só cria depois da confirmação no Telegram
+5. Em conversas e pedidos ambíguos, o código consulta a agenda e calcula conflitos
+   antes de fornecer os fatos ao modelo
+6. A cada minuto, o bot procura compromissos próximos e avisa o responsável
+
+## Decisões técnicas
+
+- **Modelo local primeiro.** O Gemma 3 (1B) roda no Ollama do próprio servidor, sem
+  porta exposta e com limite de memória. Dados pessoais e financeiros não saem do
+  servidor; o fallback para o Gemini é opcional e nunca é usado para finanças.
+- **O modelo interpreta, o código decide.** O LLM só extrai campos em JSON com schema.
+  Datas, conflitos, horários livres, recorrências e permissões são calculados em código
+  determinístico e testado. O modelo nunca grava nada: toda criação, edição ou exclusão
+  passa por uma prévia com confirmação.
+- **Fatos antes do modelo.** Para responder perguntas sobre a agenda, o código busca os
+  eventos e calcula conflitos antes e entrega esses fatos prontos ao modelo, em vez de
+  pedir que ele raciocine sobre a agenda inteira.
+- **IA só onde precisa.** Planejamento, resumos e lembretes são determinísticos e não
+  chamam LLM, o que mantém o modelo descarregado da memória na maior parte do tempo.
+- **Testes.** 65 testes cobrem interpretação informal, filtros, intervalos,
+  recorrências, conflitos, persistência e a confirmação obrigatória antes de gravar.
 
 ## Estrutura do código
 
@@ -129,8 +149,9 @@ do mês" são expandidas em eventos independentes, sempre com confirmação do l
 ### 1. Bot do Telegram
 Fale com [@BotFather](https://t.me/BotFather) no Telegram → `/newbot` → guarde o token.
 
-### 2. Chave da API do Gemini
-aistudio.google.com → "Get API key" (tier gratuito cobre o uso pessoal).
+### 2. Gemini (opcional)
+Sem chave, o bot usa só o modelo local. Para ativar o fallback, crie uma chave em
+aistudio.google.com e preencha `GEMINI_API_KEY`.
 
 O bot usa `gemini-3.6-flash` por padrão e tenta `gemini-3.5-flash` automaticamente
 se o modelo principal estiver temporariamente indisponível. Para trocar os modelos
@@ -142,8 +163,8 @@ continua recebendo atualizações do Telegram enquanto aguarda a resposta do mod
 
 O Compose executa `gemma3:1b` sem publicar a porta 11434. A configuração foi reduzida
 para servidores pequenos: um modelo por vez, contexto de 1.024 tokens, 0,8 CPU, limite
-de 1.800 MB e descarga da RAM após 30 segundos sem uso. O Gemini permanece como fallback
-quando o modelo local estiver indisponível.
+de 1.800 MB e descarga da RAM após 30 segundos sem uso. Se houver chave, o Gemini
+serve de fallback quando o modelo local estiver indisponível.
 
 Antes da primeira inicialização, crie o volume e baixe o modelo:
 
@@ -200,7 +221,7 @@ Isso cria `data/tasks-matheus.json` e `data/tasks-leticia.json`. Esses arquivos 
 tokens privados, ficam ignorados pelo Git e devem ser copiados para `data/` no servidor.
 
 ```bash
-scp data/tasks-*.json life:/home/life/site/agenda-bot/data/
+scp data/tasks-*.json usuario@servidor:/caminho/para/agenda-bot/data/
 ```
 
 Comandos disponíveis: `/tarefa comprar sabão até sexta`, `/tarefas` e, depois da
@@ -345,7 +366,7 @@ python -m unittest discover -s tests -v
 - Intervalos e recorrências são criados como eventos independentes, não como uma série
   única editável em bloco no Google Agenda
 - Edição e cancelamento atuam em uma ocorrência selecionada por vez
-- Se o Gemini não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
+- Se o modelo não conseguir extrair data/hora da mensagem, o bot responde com erro em vez de pedir mais detalhes
 - Não adiciona convidados aos eventos: contas de serviço só podem preencher `attendees`
   com delegação de domínio do Google Workspace. O calendário compartilhado continua
   visível para Matheus e Letícia, e os lembretes de eventos "Ambos" vão para os dois.
