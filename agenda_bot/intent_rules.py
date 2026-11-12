@@ -2,7 +2,6 @@
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Optional
 from unicodedata import combining, normalize
 
 from agenda_bot.settings import TZ
@@ -16,7 +15,7 @@ def texto_normalizado(texto: str) -> str:
     )
 
 
-def intencao_financeira(texto: str) -> Optional[str]:
+def intencao_financeira(texto: str) -> str | None:
     """Reconhece as quatro operações financeiras iniciais sem enviar texto à nuvem."""
     normalizado = texto_normalizado(texto)
     palavras = set(re.findall(r"[a-z0-9]+", normalizado))
@@ -64,7 +63,7 @@ def intencao_financeira(texto: str) -> Optional[str]:
     return None
 
 
-def periodo_do_texto(texto: str) -> Optional[str]:
+def periodo_do_texto(texto: str) -> str | None:
     """Retorna o período do dia mencionado explicitamente pelo usuário."""
     palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
     if palavras & {"madrugada"}:
@@ -110,7 +109,7 @@ def resolver_data_curta(texto: str) -> date:
     raise ValueError("use hoje, amanhã, um dia da semana ou uma data DD/MM")
 
 
-def pedido_horarios_livres(texto: str) -> Optional[tuple[date, int]]:
+def pedido_horarios_livres(texto: str) -> tuple[date, int] | None:
     normalizado = texto_normalizado(texto)
     sinais = (
         "horario livre",
@@ -153,7 +152,7 @@ def pedido_horarios_livres(texto: str) -> Optional[tuple[date, int]]:
     return data_consulta, duracao
 
 
-def pedido_planejamento_diario(texto: str) -> Optional[date]:
+def pedido_planejamento_diario(texto: str) -> date | None:
     normalizado = texto_normalizado(texto)
     sinais = (
         "organiza meu dia",
@@ -442,7 +441,7 @@ def consulta_eh_pessoal(texto: str) -> bool:
     return bool(palavras & {"eu", "meu", "meus", "minha", "minhas", "tenho"})
 
 
-def intervalo_de_consulta(texto: str) -> Optional[tuple[datetime, datetime, str]]:
+def intervalo_de_consulta(texto: str) -> tuple[datetime, datetime, str] | None:
     normalizado = texto_normalizado(texto)
     if not eh_consulta_agenda(texto):
         return None

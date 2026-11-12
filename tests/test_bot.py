@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 os.environ.update(
     {
         "TELEGRAM_BOT_TOKEN": "123:test",

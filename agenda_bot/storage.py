@@ -7,10 +7,10 @@ o formato do banco.
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
 from zoneinfo import ZoneInfo
 
 
@@ -437,7 +437,7 @@ class AgendaRepository:
                 ),
             )
 
-    def get_routine(self, role: str, name: str) -> Optional[list[dict]]:
+    def get_routine(self, role: str, name: str) -> list[dict] | None:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT eventos_json FROM rotinas WHERE role = ? AND nome = ?",
@@ -466,7 +466,7 @@ class AgendaRepository:
             limit = (datetime.now(self.timezone) - timedelta(days=90)).isoformat()
             connection.execute("DELETE FROM acoes WHERE created_at < ?", (limit,))
 
-    def last_pending_action(self, role: str) -> Optional[sqlite3.Row]:
+    def last_pending_action(self, role: str) -> sqlite3.Row | None:
         limit = (datetime.now(self.timezone) - timedelta(hours=24)).isoformat()
         with self.connect() as connection:
             return connection.execute(
@@ -485,7 +485,7 @@ class AgendaRepository:
                 (datetime.now(self.timezone).isoformat(), action_id),
             )
 
-    def user_role(self, telegram_user_id: int) -> Optional[str]:
+    def user_role(self, telegram_user_id: int) -> str | None:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT role FROM usuarios WHERE telegram_user_id = ?",
@@ -553,7 +553,7 @@ class AgendaRepository:
         event_id: str,
         start: str,
         chat_id: int,
-        reminder_minutes: Optional[int] = None,
+        reminder_minutes: int | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(

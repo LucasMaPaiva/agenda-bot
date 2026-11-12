@@ -9,7 +9,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from agenda_bot.reminders import reminder_heading, reminder_kind
 
-
 LOGGER = logging.getLogger(__name__)
 
 

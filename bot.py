@@ -8,14 +8,13 @@ import sqlite3
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
+import requests
 from google import genai
 from google.genai import errors, types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -26,17 +25,120 @@ from telegram.ext import (
     filters,
 )
 
-from agenda_bot.date_rules import corrigir_extracao
+from agenda_bot import reminder_jobs
 from agenda_bot.calendar_gateway import (
     create_event as _create_event,
+)
+from agenda_bot.calendar_gateway import (
     create_events_with_ids as _create_events_with_ids,
+)
+from agenda_bot.calendar_gateway import (
     delete_event as _delete_event,
+)
+from agenda_bot.calendar_gateway import (
     event_exists as _event_exists,
+)
+from agenda_bot.calendar_gateway import (
     fetch_events as _fetch_events,
+)
+from agenda_bot.calendar_gateway import (
     fetch_events_to_cancel as _fetch_events_to_cancel,
+)
+from agenda_bot.calendar_gateway import (
     restoration_body as _restoration_body,
+)
+from agenda_bot.calendar_gateway import (
     undo_action as _undo_action,
+)
+from agenda_bot.calendar_gateway import (
     update_event as _update_event,
+)
+from agenda_bot.date_rules import corrigir_extracao
+from agenda_bot.event_rules import (
+    calculate_free_times as _calculate_free_times,
+)
+from agenda_bot.event_rules import (
+    conflicts_between_events as _conflicts_between_events,
+)
+from agenda_bot.event_rules import (
+    event_end as _event_end,
+)
+from agenda_bot.event_rules import (
+    event_responsible as _event_responsible,
+)
+from agenda_bot.event_rules import (
+    event_start as _event_start,
+)
+from agenda_bot.event_rules import (
+    event_summary as _event_summary,
+)
+from agenda_bot.event_rules import (
+    filter_events_by_period as _filter_events_by_period,
+)
+from agenda_bot.event_rules import (
+    filter_events_by_term as _filter_events_by_term,
+)
+from agenda_bot.event_rules import (
+    format_free_times as _format_free_times,
+)
+from agenda_bot.event_rules import (
+    format_schedule as _format_schedule,
+)
+from agenda_bot.event_rules import (
+    planned_event_description as _planned_event_description,
+)
+from agenda_bot.event_rules import (
+    prepare_edited_event as _prepare_edited_event,
+)
+from agenda_bot.event_rules import (
+    prepare_replicated_events as _prepare_replicated_events,
+)
+from agenda_bot.event_rules import (
+    replication_conflicts as _replication_conflicts,
+)
+from agenda_bot.event_rules import (
+    select_events_to_replicate as _select_events_to_replicate,
+)
+from agenda_bot.event_rules import (
+    task_due_label as _task_due_label,
+)
+from agenda_bot.finance_gateway import FinanceGateway, FinanceGatewayError
+from agenda_bot.finance_tokens import FinanceTokenStore
+from agenda_bot.google_tasks import GoogleTasksGateway
+from agenda_bot.handlers import functionalities as functionality_handlers
+from agenda_bot.handlers import personal_reminders as personal_reminder_handlers
+from agenda_bot.handlers import preferences as preference_handlers
+from agenda_bot.handlers import tasks as task_handlers
+from agenda_bot.intent_rules import (
+    consulta_eh_pessoal,
+    eh_consulta_agenda,
+    eh_consulta_de_compromisso_especifico,
+    eh_pedido_cancelamento,
+    eh_pedido_criacao_evento,
+    eh_pedido_criacao_tarefa,
+    eh_pedido_edicao,
+    eh_pedido_replicacao,
+    intencao_financeira,
+    intervalo_de_consulta,
+    pedido_horarios_livres,
+    pedido_planejamento_diario,
+    periodo_do_texto,
+    resolver_data_curta,
+    texto_normalizado,
+)
+from agenda_bot.personal_reminders import eh_pedido_lembrete_avulso
+from agenda_bot.planning import (
+    allocate_task_blocks,
+    planned_task_ids,
+    prioritize_tasks,
+)
+
+# Fachadas mantidas em bot.py para os testes e scripts que já as importam daqui.
+from agenda_bot.reminders import (  # noqa: F401, E402
+    REMINDER_DEFAULTS,
+    REMINDER_SETTING_KEYS,
+    reminder_heading,
+    reminder_kind,
 )
 from agenda_bot.schemas import (
     CANCELAMENTO_SCHEMA,
@@ -47,62 +149,6 @@ from agenda_bot.schemas import (
     REPLICACAO_SCHEMA,
     TAREFA_SCHEMA,
 )
-from agenda_bot.finance_gateway import FinanceGateway, FinanceGatewayError
-from agenda_bot.finance_tokens import FinanceTokenStore
-from agenda_bot.google_tasks import GoogleTasksGateway
-from agenda_bot.handlers import functionalities as functionality_handlers
-from agenda_bot.handlers import preferences as preference_handlers
-from agenda_bot.handlers import personal_reminders as personal_reminder_handlers
-from agenda_bot.handlers import tasks as task_handlers
-from agenda_bot import reminder_jobs
-from agenda_bot.event_rules import (
-    calculate_free_times as _calculate_free_times,
-    conflicts_between_events as _conflicts_between_events,
-    event_end as _event_end,
-    event_responsible as _event_responsible,
-    event_start as _event_start,
-    event_summary as _event_summary,
-    filter_events_by_period as _filter_events_by_period,
-    filter_events_by_term as _filter_events_by_term,
-    format_free_times as _format_free_times,
-    format_schedule as _format_schedule,
-    planned_event_description as _planned_event_description,
-    prepare_edited_event as _prepare_edited_event,
-    prepare_replicated_events as _prepare_replicated_events,
-    replication_conflicts as _replication_conflicts,
-    select_events_to_replicate as _select_events_to_replicate,
-    task_due_label as _task_due_label,
-)
-from agenda_bot.intent_rules import (
-    consulta_eh_pessoal,
-    eh_consulta_agenda,
-    eh_consulta_de_compromisso_especifico,
-    eh_pedido_cancelamento,
-    eh_pedido_criacao_evento,
-    eh_pedido_criacao_tarefa,
-    eh_pedido_edicao,
-    eh_pedido_replicacao,
-    intervalo_de_consulta,
-    intencao_financeira,
-    pedido_horarios_livres,
-    pedido_planejamento_diario,
-    periodo_do_texto,
-    resolver_data_curta,
-    texto_normalizado,
-)
-from agenda_bot.planning import (
-    allocate_task_blocks,
-    planned_task_ids,
-    prioritize_tasks,
-)
-from agenda_bot.personal_reminders import eh_pedido_lembrete_avulso
-from agenda_bot.reminders import (
-    REMINDER_DEFAULTS,
-    REMINDER_SETTING_KEYS,
-    reminder_heading,
-    reminder_kind,
-)
-from agenda_bot.storage import AgendaRepository
 from agenda_bot.settings import (
     APP_VERSION,
     BUILD_COMMIT,
@@ -110,14 +156,14 @@ from agenda_bot.settings import (
     COLOR_BY_RESPONSAVEL,
     DATABASE_PATH,
     DEFAULT_RECURRENCE_DAYS,
-    GEMINI_API_KEY,
-    GEMINI_FALLBACK_MODEL,
-    GEMINI_MODEL,
-    GEMINI_TIMEOUT_SECONDS,
     FINANCE_API_TIMEOUT_SECONDS,
     FINANCE_API_TOKENS,
     FINANCE_API_URL,
     FINANCE_LINK_SECRET,
+    GEMINI_API_KEY,
+    GEMINI_FALLBACK_MODEL,
+    GEMINI_MODEL,
+    GEMINI_TIMEOUT_SECONDS,
     GOOGLE_SERVICE_ACCOUNT_FILE,
     GOOGLE_TASKS_TOKEN_DIR,
     LLM_FALLBACK_TO_GEMINI,
@@ -131,7 +177,7 @@ from agenda_bot.settings import (
     OLLAMA_NUM_CTX,
     OLLAMA_TIMEOUT_SECONDS,
     REGISTRATION_CODES,
-    REMINDER_CHECK_SECONDS,
+    REMINDER_CHECK_SECONDS,  # noqa: F401, E402
     REMINDER_MINUTES,
     STARTED_AT,
     TASKS_SCOPES,
@@ -139,9 +185,10 @@ from agenda_bot.settings import (
     TIMEZONE,
     TZ,
 )
+from agenda_bot.storage import AgendaRepository
 
-LAST_REMINDER_CHECK: Optional[datetime] = None
-LAST_REMINDER_ERROR: Optional[str] = None
+LAST_REMINDER_CHECK: datetime | None = None
+LAST_REMINDER_ERROR: str | None = None
 LOGGER = logging.getLogger(__name__)
 CRIACAO_INCOMPLETA_KEY = "criacao_evento_incompleta"
 CRIACAO_INCOMPLETA_TTL_SECONDS = 15 * 60
@@ -173,7 +220,7 @@ def _runtime_module():
     return sys.modules[__name__]
 
 
-def set_reminder_status(check_time: datetime, error: Optional[str]) -> None:
+def set_reminder_status(check_time: datetime, error: str | None) -> None:
     global LAST_REMINDER_CHECK, LAST_REMINDER_ERROR
     LAST_REMINDER_CHECK = check_time
     LAST_REMINDER_ERROR = error
@@ -227,7 +274,7 @@ def salvar_rotina(role: str, nome: str, eventos: list[dict]) -> None:
     _repository().save_routine(role, nome, eventos)
 
 
-def obter_rotina(role: str, nome: str) -> Optional[list[dict]]:
+def obter_rotina(role: str, nome: str) -> list[dict] | None:
     return _repository().get_routine(role, nome)
 
 
@@ -239,7 +286,7 @@ def registrar_acao(role: str, tipo: str, payload: dict) -> None:
     _repository().record_action(role, tipo, payload)
 
 
-def ultima_acao_pendente(role: str) -> Optional[sqlite3.Row]:
+def ultima_acao_pendente(role: str) -> sqlite3.Row | None:
     return _repository().last_pending_action(role)
 
 
@@ -247,7 +294,7 @@ def marcar_acao_desfeita(acao_id: int) -> None:
     _repository().mark_action_undone(acao_id)
 
 
-def role_do_usuario(telegram_user_id: int) -> Optional[str]:
+def role_do_usuario(telegram_user_id: int) -> str | None:
     return _repository().user_role(telegram_user_id)
 
 
@@ -264,7 +311,7 @@ def notificacao_enviada(event_id: str, inicio: str, chat_id: int) -> bool:
 
 
 def marcar_notificacao_enviada(
-    event_id: str, inicio: str, chat_id: int, antecedencia: Optional[int] = None
+    event_id: str, inicio: str, chat_id: int, antecedencia: int | None = None
 ) -> None:
     _repository().mark_notification_sent(
         event_id, inicio, chat_id, antecedencia
@@ -334,7 +381,7 @@ def liberar_lembrete_avulso(lembrete_id: int) -> None:
 
 
 def configuracao_lembretes(
-    role: str, valores: Optional[dict[str, str]] = None
+    role: str, valores: dict[str, str] | None = None
 ) -> dict:
     def obter(chave: str, padrao: str) -> str:
         if valores is not None:
@@ -360,7 +407,7 @@ def configuracao_lembretes(
 
 
 def gerar_resposta_ollama(
-    mensagens: list[dict], schema: Optional[dict] = None, max_tokens: int = 512
+    mensagens: list[dict], schema: dict | None = None, max_tokens: int = 512
 ) -> str:
     corpo = {
         "model": OLLAMA_MODEL,
@@ -493,7 +540,7 @@ def gerar_conversa_llm(mensagens: list[dict]) -> str:
     return resposta.text.strip()
 
 
-def extrair_eventos(texto: str, role: Optional[str] = None) -> list[dict]:
+def extrair_eventos(texto: str, role: str | None = None) -> list[dict]:
     agora = datetime.now(TZ)
     texto_original = texto
     responsavel_resolvido = responsavel_mencionado_no_texto(texto, role)
@@ -612,8 +659,8 @@ Mensagem: "{texto}"
 
 
 def extrair_cancelamento(
-    texto: str, referencia: Optional[dict] = None
-) -> tuple[Optional[str], datetime, datetime]:
+    texto: str, referencia: dict | None = None
+) -> tuple[str | None, datetime, datetime]:
     agora = datetime.now(TZ)
     prompt = f"""Você extrai critérios para localizar um evento que será cancelado no Google Agenda.
 Data e hora atuais: {agora.strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}).
@@ -660,9 +707,9 @@ Mensagem: "{texto}"
 
 def extrair_edicao(
     texto: str,
-    referencia: Optional[dict] = None,
-    role: Optional[str] = None,
-) -> tuple[Optional[str], datetime, datetime, dict]:
+    referencia: dict | None = None,
+    role: str | None = None,
+) -> tuple[str | None, datetime, datetime, dict]:
     agora = datetime.now(TZ)
     responsavel_resolvido = responsavel_mencionado_no_texto(texto, role)
     texto_modelo = texto
@@ -1234,8 +1281,8 @@ def texto_tem_titulo_de_evento(texto: str) -> bool:
 
 
 def responsavel_mencionado_no_texto(
-    texto: str, role: Optional[str] = None
-) -> Optional[str]:
+    texto: str, role: str | None = None
+) -> str | None:
     normalizado = texto_normalizado(texto).strip()
     tem_matheus = bool(re.search(r"\bmatheus\b", normalizado))
     tem_leticia = bool(re.search(r"\bleticia\b", normalizado))
@@ -1261,7 +1308,7 @@ def responsavel_mencionado_no_texto(
     return None
 
 
-def texto_com_responsavel_resolvido(texto: str, role: Optional[str]) -> str:
+def texto_com_responsavel_resolvido(texto: str, role: str | None) -> str:
     normalizado = texto_normalizado(texto)
     if re.search(r"\b(?:matheus|leticia|ambos)\b", normalizado):
         return texto
@@ -1272,7 +1319,7 @@ def texto_com_responsavel_resolvido(texto: str, role: Optional[str]) -> str:
 
 
 def dados_faltantes_criacao_evento(
-    texto: str, role: Optional[str] = None
+    texto: str, role: str | None = None
 ) -> list[str]:
     faltantes = []
     if not texto_tem_titulo_de_evento(texto):
@@ -1333,7 +1380,7 @@ async def pedir_dados_para_criacao(
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
     *,
-    role: Optional[str] = None,
+    role: str | None = None,
     confirmar_intencao: bool = False,
 ) -> None:
     faltantes = dados_faltantes_criacao_evento(texto, role)
@@ -1467,7 +1514,7 @@ def intervalo_da_intencao(dados: dict) -> tuple[datetime, datetime, str]:
     return inicio, fim, rotulo
 
 
-def resolver_continuacao_agenda(texto: str, role: str) -> Optional[dict]:
+def resolver_continuacao_agenda(texto: str, role: str) -> dict | None:
     estado = obter_estado_conversa(role)
     if estado.get("tipo") != "consulta_agenda":
         return None
@@ -1534,7 +1581,7 @@ def resolver_continuacao_agenda(texto: str, role: str) -> Optional[dict]:
     }
 
 
-def evento_referenciado(texto: str, role: str) -> Optional[dict]:
+def evento_referenciado(texto: str, role: str) -> dict | None:
     palavras = set(re.findall(r"[a-z0-9]+", texto_normalizado(texto)))
     if not palavras & {"esse", "essa", "isso", "ele", "ela"}:
         return None
@@ -1569,7 +1616,7 @@ def buscar_eventos(inicio: datetime, fim: datetime) -> list[dict]:
 
 
 def buscar_eventos_para_cancelar(
-    termo: Optional[str], inicio: datetime, fim: datetime
+    termo: str | None, inicio: datetime, fim: datetime
 ) -> list[dict]:
     return _fetch_events_to_cancel(
         termo, inicio, fim, obter_calendar_service, CALENDAR_ID
@@ -1588,11 +1635,11 @@ def executar_desfazer(acao: sqlite3.Row) -> str:
     return _undo_action(acao, obter_calendar_service, CALENDAR_ID)
 
 
-def inicio_do_evento(evento: dict) -> Optional[datetime]:
+def inicio_do_evento(evento: dict) -> datetime | None:
     return _event_start(evento, TZ)
 
 
-def fim_do_evento(evento: dict) -> Optional[datetime]:
+def fim_do_evento(evento: dict) -> datetime | None:
     return _event_end(evento, TZ)
 
 
@@ -1629,7 +1676,7 @@ def preparar_eventos_replicados(
 
 
 def conflitos_da_replicacao(
-    eventos_novos: list[dict], ignorar_ids: Optional[set[str]] = None
+    eventos_novos: list[dict], ignorar_ids: set[str] | None = None
 ) -> list[str]:
     return _replication_conflicts(
         eventos_novos, TZ, buscar_eventos, ignorar_ids
@@ -1639,11 +1686,11 @@ def conflitos_da_replicacao(
 async def responder_consulta(
     update: Update,
     intervalo: tuple[datetime, datetime, str],
-    role: Optional[str] = None,
-    termo: Optional[str] = None,
-    periodo: Optional[str] = None,
-    actor_role: Optional[str] = None,
-    texto_usuario: Optional[str] = None,
+    role: str | None = None,
+    termo: str | None = None,
+    periodo: str | None = None,
+    actor_role: str | None = None,
+    texto_usuario: str | None = None,
 ) -> None:
     inicio, fim, rotulo = intervalo
     rotulo_base = rotulo
@@ -1706,10 +1753,10 @@ def registrar_contexto_consulta(
     fim: datetime,
     rotulo: str,
     pessoal: bool,
-    termo: Optional[str],
-    periodo: Optional[str],
+    termo: str | None,
+    periodo: str | None,
     eventos: list[dict],
-    texto_usuario: Optional[str],
+    texto_usuario: str | None,
     resposta: str,
 ) -> None:
     estado = {
@@ -1790,7 +1837,7 @@ def calcular_horarios_livres(
     role: str,
     data_consulta: date,
     duracao_minutos: int,
-    eventos_existentes: Optional[list[dict]] = None,
+    eventos_existentes: list[dict] | None = None,
 ) -> list[tuple[datetime, datetime]]:
     return _calculate_free_times(
         role,
@@ -1819,7 +1866,7 @@ def rotulo_prazo_tarefa(tarefa: dict, data_consulta: date) -> str:
     return _task_due_label(tarefa, data_consulta)
 
 
-def carregar_tarefas_planejamento(role: str) -> tuple[list[dict], Optional[str]]:
+def carregar_tarefas_planejamento(role: str) -> tuple[list[dict], str | None]:
     try:
         return listar_tarefas_google(role), None
     except Exception as erro:
@@ -1904,8 +1951,8 @@ def montar_resumo_proativo(
     role: str,
     tipo: str,
     agora: datetime,
-    eventos_do_periodo: Optional[list[dict]] = None,
-) -> Optional[str]:
+    eventos_do_periodo: list[dict] | None = None,
+) -> str | None:
     data_consulta = agora.date() if tipo == "manha" else agora.date() + timedelta(days=1)
     inicio = datetime.combine(data_consulta, datetime.min.time(), tzinfo=TZ)
     eventos_base = (
@@ -2035,7 +2082,7 @@ async def mostrar_confirmacao_criacao(
     context: ContextTypes.DEFAULT_TYPE,
     eventos: list[dict],
     cabecalho: str = "Confira antes de criar:",
-    avisos: Optional[list[str]] = None,
+    avisos: list[str] | None = None,
 ) -> None:
     token = salvar_acao_pendente(
         context, "criacoes_pendentes", {"eventos": eventos}
@@ -2064,7 +2111,7 @@ async def iniciar_criacao(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
-    role: Optional[str] = None,
+    role: str | None = None,
 ) -> None:
     eventos = await asyncio.to_thread(extrair_eventos, texto, role)
     conflitos = await asyncio.to_thread(conflitos_da_replicacao, eventos)
@@ -2178,7 +2225,7 @@ async def callback_tarefa(
 
 
 def resumo_edicao(
-    evento_original: dict, evento_novo: dict, avisos: Optional[list[str]] = None
+    evento_original: dict, evento_novo: dict, avisos: list[str] | None = None
 ) -> str:
     texto = (
         f"Antes:\n{resumo_evento(evento_original)}\n\n"
@@ -2211,8 +2258,8 @@ async def iniciar_edicao(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
-    referencia: Optional[dict] = None,
-    role: Optional[str] = None,
+    referencia: dict | None = None,
+    role: str | None = None,
 ) -> None:
     termo, inicio, fim, alteracoes = await asyncio.to_thread(
         extrair_edicao, texto, referencia, role
@@ -2332,7 +2379,7 @@ async def iniciar_cancelamento(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     texto: str,
-    referencia: Optional[dict] = None,
+    referencia: dict | None = None,
 ) -> None:
     termo, inicio, fim = await asyncio.to_thread(
         extrair_cancelamento, texto, referencia

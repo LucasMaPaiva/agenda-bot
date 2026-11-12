@@ -1,7 +1,7 @@
 """Cliente da API financeira dedicada ao Telegram."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -27,7 +27,7 @@ class FinanceGateway:
         base_url: str,
         tokens: dict[str, str],
         timeout_seconds: int = 10,
-        token_store: Optional[FinanceTokenStore] = None,
+        token_store: FinanceTokenStore | None = None,
         link_secret: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")

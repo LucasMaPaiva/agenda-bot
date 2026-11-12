@@ -2,13 +2,11 @@
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Optional
-
 
 TASK_MARKER = "Tarefa Google:"
 
 
-def task_due_date(task: dict) -> Optional[date]:
+def task_due_date(task: dict) -> date | None:
     value = task.get("due")
     if not value:
         return None
@@ -34,7 +32,7 @@ def planned_task_ids(events: list[dict]) -> set[str]:
 def prioritize_tasks(
     tasks: list[dict],
     target_date: date,
-    ignored_ids: Optional[set[str]] = None,
+    ignored_ids: set[str] | None = None,
     limit: int = 5,
 ) -> list[dict]:
     ignored = ignored_ids or set()

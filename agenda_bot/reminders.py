@@ -3,7 +3,6 @@
 import re
 from unicodedata import combining, normalize
 
-
 REMINDER_DEFAULTS = {
     "normal": 30,
     "preparo": 60,

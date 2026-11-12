@@ -6,7 +6,6 @@ from datetime import date, datetime, time, timedelta
 from agenda_bot.intent_rules import texto_normalizado
 from agenda_bot.settings import TZ
 
-
 _WEEKDAYS = {
     "segunda": 0,
     "terca": 1,

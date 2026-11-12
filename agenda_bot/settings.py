@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]

@@ -6,7 +6,7 @@ agenda, para que o vínculo não dependa do esquema das outras funcionalidades.
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class FinanceTokenStore:
@@ -37,5 +37,5 @@ class FinanceTokenStore:
                 "INSERT INTO finance_tokens (role, token, linked_at) VALUES (?, ?, ?)"
                 " ON CONFLICT(role) DO UPDATE SET token = excluded.token,"
                 " linked_at = excluded.linked_at",
-                (role, token, datetime.now(timezone.utc).isoformat()),
+                (role, token, datetime.now(UTC).isoformat()),
             )

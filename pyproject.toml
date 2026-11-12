@@ -1,0 +1,33 @@
+[project]
+name = "agenda-bot"
+version = "3.1.0"
+description = "Bot do Telegram que entende pedidos em texto livre e gerencia o Google Agenda com um LLM local (Ollama)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-telegram-bot[job-queue]>=22.7,<23",
+    "google-genai>=2.25,<3",
+    "google-api-python-client>=2,<3",
+    "google-auth>=2,<3",
+    "google-auth-oauthlib>=1,<2",
+    "python-dotenv>=1,<2",
+    "requests>=2,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

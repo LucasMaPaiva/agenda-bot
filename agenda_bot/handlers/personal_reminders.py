@@ -7,7 +7,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from agenda_bot.personal_reminders import apply_update, format_preview, parse_request
 
-
 PENDING_KEY = "rascunhos_lembretes_avulsos"
 INPUT_KEY = "entrada_lembrete_avulso"
 MAX_AGE_SECONDS = 900

@@ -2,23 +2,23 @@
 
 import json
 import re
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from agenda_bot.intent_rules import texto_normalizado
 from agenda_bot.planning import TASK_MARKER, planned_task_ids, task_due_date
 
 
-def event_start(event: dict, timezone: ZoneInfo) -> Optional[datetime]:
+def event_start(event: dict, timezone: ZoneInfo) -> datetime | None:
     value = event.get("start", {}).get("dateTime")
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone)
 
 
-def event_end(event: dict, timezone: ZoneInfo) -> Optional[datetime]:
+def event_end(event: dict, timezone: ZoneInfo) -> datetime | None:
     value = event.get("end", {}).get("dateTime")
     if not value:
         return None
@@ -201,7 +201,7 @@ def replication_conflicts(
     new_events: list[dict],
     timezone: ZoneInfo,
     fetch_events: Callable[[datetime, datetime], list[dict]],
-    ignored_ids: Optional[set[str]] = None,
+    ignored_ids: set[str] | None = None,
 ) -> list[str]:
     if not new_events:
         return []
@@ -352,8 +352,8 @@ def calculate_free_times(
     timezone: ZoneInfo,
     get_setting: Callable[[str, str, str], str],
     fetch_events: Callable[[datetime, datetime], list[dict]],
-    existing_events: Optional[list[dict]] = None,
-    now: Optional[datetime] = None,
+    existing_events: list[dict] | None = None,
+    now: datetime | None = None,
 ) -> list[tuple[datetime, datetime]]:
     if duration_minutes < 15 or duration_minutes > 480:
         raise ValueError("a duração deve ficar entre 15 minutos e 8 horas")

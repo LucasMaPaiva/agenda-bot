@@ -1,5 +1,9 @@
 # Bot do Telegram — Agenda Compartilhada
 
+[![CI](https://github.com/LucasMaPaiva/agenda-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/LucasMaPaiva/agenda-bot/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![LLM local](https://img.shields.io/badge/LLM-Ollama%20%7C%20Gemma%203-6a5acd)
+
 Bot que recebe mensagens em texto livre no Telegram e gerencia o Google Agenda
 compartilhado do Matheus e da Letícia, com integração opcional ao Google Tarefas
 individual de cada um e consulta e lançamento no Finanças App. A interpretação das
@@ -39,7 +43,7 @@ Convenções da agenda:
   pedir que ele raciocine sobre a agenda inteira.
 - **IA só onde precisa.** Planejamento, resumos e lembretes são determinísticos e não
   chamam LLM, o que mantém o modelo descarregado da memória na maior parte do tempo.
-- **Testes.** 65 testes cobrem interpretação informal, filtros, intervalos,
+- **Testes e avaliação.** 81 testes cobrem interpretação informal, filtros, intervalos,
   recorrências, conflitos, persistência e a confirmação obrigatória antes de gravar.
 
 ## Estrutura do código
@@ -352,15 +356,20 @@ docker compose exec ollama ollama rm NOME_DO_MODELO
    ```
 4. Ver logs: `journalctl -u agenda-bot -f`
 
-## Testes
+## Desenvolvimento e testes
 
-Os testes cobrem interpretação informal, filtros pessoais, intervalos, recorrências,
-detecção de conflitos, horários livres, persistência, edição e a confirmação
-obrigatória antes da criação:
+O projeto usa [uv](https://docs.astral.sh/uv/). Os testes cobrem interpretação informal,
+filtros pessoais, intervalos, recorrências, detecção de conflitos, horários livres,
+persistência, edição, as regras de data em código e a confirmação obrigatória antes da
+criação. O CI roda lint e testes a cada push.
 
 ```bash
-python -m unittest discover -s tests -v
+uv sync
+uv run ruff check .
+uv run pytest
 ```
+
+A avaliação da extração com o modelo real está em [`evals/`](evals/README.md).
 
 ## Limitações conhecidas
 - Intervalos e recorrências são criados como eventos independentes, não como uma série

@@ -1,8 +1,8 @@
 """Operações do Google Agenda sem dependência de Telegram ou regras de conversa."""
 
 import json
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from googleapiclient.errors import HttpError
@@ -132,7 +132,7 @@ def fetch_events(
 
 
 def fetch_events_to_cancel(
-    term: Optional[str],
+    term: str | None,
     start: datetime,
     end: datetime,
     service_provider: Callable,

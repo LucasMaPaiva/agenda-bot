@@ -7,3 +7,4 @@ __pycache__/
 WhatsApp Image *.jpeg
 data/*
 !data/.gitkeep
+.venv/
